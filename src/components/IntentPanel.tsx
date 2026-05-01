@@ -30,7 +30,9 @@ const STEP_ORDER: { key: StepKey; label: string }[] = [
   { key: "createIntent", label: "POST /intent" },
   { key: "deposited", label: "User deposited (IntentDeposited)" },
   { key: "fill", label: "KalqiX fill" },
-  { key: "settled", label: "Settlement" },
+  // Default to the happy-path label; if the swap unwinds, the recorded step
+  // overrides this with "User refunded (IntentUnlocked)" at settlement time.
+  { key: "settled", label: "User filled (IntentSettled)" },
 ];
 
 const RENDERED_KEYS = new Set<StepKey>(STEP_ORDER.map((s) => s.key));
