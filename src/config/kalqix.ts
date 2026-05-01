@@ -1,10 +1,10 @@
 import type { TokenSymbol } from "./tokens";
 
-export const KALQIX_BASE_URL = "https://testnet-api.kalqix.com/v1";
-
 /**
  * Mapping from (tokenIn, tokenOut) → KalqiX market + side.
  * KalqiX uses BTC as the base ticker; the Avail solver routes cbBTC through it.
+ * Same routing on testnet and mainnet.
+ *
  * See PLAN.md §11.1 — load-bearing assumption, verified at app boot via /markets.
  */
 export interface MarketRoute {

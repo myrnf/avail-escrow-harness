@@ -1,10 +1,35 @@
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useBlockNumber } from "wagmi";
-import { ACTIVE_CHAIN } from "../config/chain";
+import { useAccount, useBlockNumber, useSwitchChain } from "wagmi";
+import { useActiveNetwork } from "../hooks/useActiveNetwork";
+import { useNetworkStore } from "../store/network";
+import { NETWORKS, type NetworkKey } from "../config/networks";
 import { shortAddress } from "../lib/format";
 
 export function Header() {
-  const block = useBlockNumber({ watch: true, query: { refetchInterval: 6_000 } });
+  const network = useActiveNetwork();
+  const setActive = useNetworkStore((s) => s.setActive);
+  const { isConnected, chainId } = useAccount();
+  const { switchChain } = useSwitchChain();
+  const block = useBlockNumber({
+    watch: true,
+    chainId: network.chain.id,
+    query: { refetchInterval: 6_000 },
+  });
+
+  const wrongChain =
+    isConnected && chainId !== undefined && chainId !== network.chain.id;
+
+  function pickNetwork(key: NetworkKey) {
+    if (key === network.key) return;
+    setActive(key);
+    if (isConnected) {
+      try {
+        switchChain({ chainId: NETWORKS[key].chain.id });
+      } catch {
+        /* user can switch manually */
+      }
+    }
+  }
 
   return (
     <header className="header">
@@ -15,10 +40,29 @@ export function Header() {
         <span className="brand__sep">/</span>
         <span className="brand__label">SWAP HARNESS</span>
       </div>
+
       <div className="header__meta">
-        <span className="crumb">
-          CHAIN <b>{ACTIVE_CHAIN.name.toUpperCase()}</b>
-        </span>
+        {/* Network toggle */}
+        <div className="net-toggle" role="group" aria-label="Network">
+          {(Object.values(NETWORKS) as { key: NetworkKey; shortLabel: string; configured: boolean }[]).map(
+            (n) => (
+              <button
+                key={n.key}
+                type="button"
+                className={
+                  "net-toggle__btn" +
+                  (network.key === n.key ? " is-active" : "") +
+                  (!n.configured ? " is-stub" : "")
+                }
+                onClick={() => pickNetwork(n.key)}
+                title={n.configured ? n.shortLabel : `${n.shortLabel} — not configured`}
+              >
+                {n.shortLabel}
+              </button>
+            )
+          )}
+        </div>
+
         <span className="crumb">
           BLOCK <b>{block.data ? `#${block.data.toString()}` : "—"}</b>
         </span>
@@ -33,16 +77,13 @@ export function Header() {
             mounted,
             authenticationStatus,
           }) => {
-            const ready =
-              mounted && authenticationStatus !== "loading";
+            const ready = mounted && authenticationStatus !== "loading";
             const connected =
               ready &&
               account &&
               chain &&
               (!authenticationStatus || authenticationStatus === "authenticated");
 
-            // While RainbowKit is mounting, render a non-clickable shell so
-            // the layout doesn't jump and the user always sees a button.
             if (!ready) {
               return (
                 <button
@@ -57,7 +98,6 @@ export function Header() {
                 </button>
               );
             }
-
             if (!connected) {
               return (
                 <button
@@ -70,8 +110,7 @@ export function Header() {
                 </button>
               );
             }
-
-            if (chain.unsupported) {
+            if (chain.unsupported || wrongChain) {
               return (
                 <button
                   className="connect-btn is-warn"
@@ -83,7 +122,6 @@ export function Header() {
                 </button>
               );
             }
-
             return (
               <button
                 className="connect-btn is-connected"

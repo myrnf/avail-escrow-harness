@@ -7,15 +7,17 @@ import {
   type CreateIntentRequest,
 } from "../lib/intent";
 import { useActivityLog } from "../store/activityLog";
+import { useActiveNetwork } from "./useActiveNetwork";
 
 const POLL_MS = 2500;
 
 export function useCreateIntent() {
   const log = useActivityLog((s) => s.push);
+  const network = useActiveNetwork();
   return useMutation({
     mutationFn: async (body: CreateIntentRequest) => {
       const t0 = performance.now();
-      const success = await createIntent(body);
+      const success = await createIntent(network.availEscrowBaseUrl, body);
       const dt = Math.round(performance.now() - t0);
       log({
         level: "info",
@@ -36,10 +38,11 @@ export function useCreateIntent() {
 }
 
 export function useIntentStatus(id: string | null) {
+  const network = useActiveNetwork();
   return useQuery({
-    queryKey: ["intent", id],
+    queryKey: ["intent", network.key, id],
     enabled: !!id,
-    queryFn: () => getIntent(id!),
+    queryFn: () => getIntent(network.availEscrowBaseUrl, id!),
     refetchInterval: (q) => {
       const d = q.state.data;
       if (!d) return POLL_MS;

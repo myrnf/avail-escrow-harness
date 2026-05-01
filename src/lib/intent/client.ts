@@ -1,4 +1,3 @@
-import { AVAIL_ESCROW_BASE_URL } from "../../config/avail";
 import type {
   CreateIntentEnvelope,
   CreateIntentRequest,
@@ -18,9 +17,17 @@ export class AvailIntentError extends Error {
 }
 
 export async function createIntent(
+  baseUrl: string,
   body: CreateIntentRequest
 ): Promise<CreateIntentSuccess> {
-  const res = await fetch(`${AVAIL_ESCROW_BASE_URL}/intent`, {
+  if (!baseUrl) {
+    throw new AvailIntentError(
+      "Avail Escrow base URL is not configured for the active network.",
+      "INTERNAL_ERROR",
+      0
+    );
+  }
+  const res = await fetch(`${baseUrl}/intent`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -54,9 +61,13 @@ export async function createIntent(
   return envelope.success;
 }
 
-export async function getIntent(id: string): Promise<IntentDetail | null> {
+export async function getIntent(
+  baseUrl: string,
+  id: string
+): Promise<IntentDetail | null> {
+  if (!baseUrl) return null;
   const res = await fetch(
-    `${AVAIL_ESCROW_BASE_URL}/intent/${encodeURIComponent(id)}`
+    `${baseUrl}/intent/${encodeURIComponent(id)}`
   );
   if (res.status === 404) return null;
   if (!res.ok) {

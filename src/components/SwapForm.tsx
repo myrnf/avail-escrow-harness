@@ -3,8 +3,7 @@ import { useAccount } from "wagmi";
 import { Panel, PanelStatus } from "./primitives/Panel";
 import { TokenPill } from "./primitives/TokenPill";
 import { Chip } from "./primitives/Chip";
-import { TOKENS, type TokenSymbol } from "../config/tokens";
-import { ESCROW_CONTRACT_ADDRESS } from "../config/chain";
+import { getToken, type TokenSymbol } from "../config/tokens";
 import {
   DEFAULT_SLIPPAGE_BPS,
   SLIPPAGE_PRESETS_BPS,
@@ -13,6 +12,7 @@ import { useQuote } from "../hooks/useQuote";
 import { useTokenBalance, useTokenAllowance, useApprove } from "../hooks/useErc20";
 import { useCreateIntent } from "../hooks/useIntent";
 import { useDeposit } from "../hooks/useDeposit";
+import { useActiveNetwork } from "../hooks/useActiveNetwork";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
 import { useIntentTiming } from "../store/intentTiming";
@@ -24,6 +24,7 @@ interface Props {
 
 export function SwapForm({ isInFlight, onIntentCreated }: Props) {
   const { address, isConnected } = useAccount();
+  const network = useActiveNetwork();
   const [tokenIn, setTokenIn] = useState<TokenSymbol>("USDC");
   const [tokenOut, setTokenOut] = useState<TokenSymbol>("cbBTC");
   const [amountInStr, setAmountInStr] = useState("");
@@ -31,8 +32,8 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
   const log = useActivityLog((s) => s.push);
   const lifecycle = useIntentTiming();
 
-  const inInfo = TOKENS[tokenIn];
-  const outInfo = TOKENS[tokenOut];
+  const inInfo = getToken(network, tokenIn);
+  const outInfo = getToken(network, tokenOut);
 
   const amountIn = useMemo(() => {
     try {
@@ -46,7 +47,7 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
   const allowance = useTokenAllowance(
     inInfo.address,
     address,
-    ESCROW_CONTRACT_ADDRESS
+    network.escrowContract
   );
   const quote = useQuote({
     tokenIn,
@@ -74,6 +75,16 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
   useEffect(() => {
     if (approve.isSuccess) void allowance.refetch();
   }, [approve.isSuccess]);
+
+  // Reset local swap state when the harness network changes — addresses,
+  // escrow contract, and any in-flight intent are no longer applicable.
+  useEffect(() => {
+    setAmountInStr("");
+    createIntent.reset();
+    deposit.reset();
+    approve.reset();
+    lifecycle.reset();
+  }, [network.key]);
 
   // ---------- LIFECYCLE RECORDING ----------
   // createIntent succeeded → record + propagate intent ID up.
@@ -191,7 +202,10 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
   let ctaAction: () => void = onConfirm;
   let ctaShowSpinner = false;
 
-  if (!isConnected) {
+  if (!network.configured) {
+    ctaLabel = `${network.shortLabel} not configured`;
+    ctaDisabled = true;
+  } else if (!isConnected) {
     ctaLabel = "Connect wallet";
     ctaDisabled = true;
   } else if (amountIn === 0n) {
@@ -215,7 +229,7 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
     } else {
       ctaLabel = `Approve ${tokenIn}`;
       ctaAction = () =>
-        approve.approve(inInfo.address, ESCROW_CONTRACT_ADDRESS, amountIn);
+        approve.approve(inInfo.address, network.escrowContract, amountIn);
     }
   } else if (createIntent.isPending) {
     ctaLabel = "Creating intent…";
@@ -232,7 +246,7 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
   }
 
   const error = createIntent.error || deposit.error || approve.error;
-  const formDisabled = isInFlight || approve.isPending;
+  const formDisabled = isInFlight || approve.isPending || !network.configured;
 
   return (
     <Panel

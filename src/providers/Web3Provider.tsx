@@ -3,31 +3,31 @@ import { ReactNode, useMemo } from "react";
 import { WagmiProvider, http } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RainbowKitProvider, getDefaultConfig, lightTheme } from "@rainbow-me/rainbowkit";
-import {
-  ACTIVE_CHAIN,
-  RPC_URL,
-  WALLETCONNECT_PROJECT_ID,
-} from "../config/chain";
+import { WALLETCONNECT_PROJECT_ID } from "../config/chain";
+import { NETWORKS } from "../config/networks";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // KalqiX quotes refetch via their own staleTime; default is fine elsewhere.
       retry: 1,
       refetchOnWindowFocus: false,
     },
   },
 });
 
+const networks = Object.values(NETWORKS);
+const [first, ...rest] = networks;
+if (!first) throw new Error("No networks configured");
+
+const transports = Object.fromEntries(
+  networks.map((n) => [n.chain.id, http(n.rpcUrl)])
+);
+
 const config = getDefaultConfig({
   appName: "Avail × KalqiX Swap Harness",
-  // RainbowKit requires a non-empty string. WalletConnect features are gated
-  // behind a real projectId; without one, injected wallets still work fine.
   projectId: WALLETCONNECT_PROJECT_ID || "avail-kalqix-harness-local",
-  chains: [ACTIVE_CHAIN],
-  transports: {
-    [ACTIVE_CHAIN.id]: http(RPC_URL),
-  },
+  chains: [first.chain, ...rest.map((n) => n.chain)] as [typeof first.chain, ...typeof rest[number]["chain"][]],
+  transports,
   ssr: false,
 });
 

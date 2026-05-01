@@ -3,18 +3,20 @@ import { useMemo } from "react";
 import { getMarket, getMarketPrice, quoteSwap } from "../lib/quote";
 import { rawPriceFromMarketPrice, QuoteValidationError } from "../lib/quote/calc";
 import { routeFor } from "../config/kalqix";
-import { TOKENS, type TokenSymbol } from "../config/tokens";
+import { getToken, type TokenSymbol } from "../config/tokens";
 import { useActivityLog } from "../store/activityLog";
+import { useActiveNetwork } from "./useActiveNetwork";
 
 const QUOTE_REFRESH_MS = 5_000;
 
 export function useMarket(ticker: string) {
   const log = useActivityLog((s) => s.push);
+  const network = useActiveNetwork();
   return useQuery({
-    queryKey: ["market", ticker],
+    queryKey: ["market", network.key, ticker],
     queryFn: async () => {
       const t0 = performance.now();
-      const m = await getMarket(ticker);
+      const m = await getMarket(network.kalqixBaseUrl, ticker);
       log({
         level: "info",
         channel: "API",
@@ -42,6 +44,7 @@ export function useQuote({
   slippageBps,
   enabled = true,
 }: QuoteArgs) {
+  const network = useActiveNetwork();
   const route = useMemo(() => routeFor(tokenIn, tokenOut), [tokenIn, tokenOut]);
   const market = useMarket(route?.ticker ?? "BTC_USDC");
   const log = useActivityLog((s) => s.push);
@@ -49,6 +52,7 @@ export function useQuote({
   const query = useQuery({
     queryKey: [
       "quote",
+      network.key,
       route?.ticker,
       route?.side,
       tokenIn,
@@ -57,17 +61,18 @@ export function useQuote({
       slippageBps,
     ],
     enabled: enabled && !!route && !!market.data && amountIn > 0n,
-    // Stop polling when the error is deterministic (input must change to fix).
     refetchInterval: (q) =>
-      q.state.error instanceof QuoteValidationError
-        ? false
-        : QUOTE_REFRESH_MS,
+      q.state.error instanceof QuoteValidationError ? false : QUOTE_REFRESH_MS,
     refetchIntervalInBackground: false,
     retry: (_n, err) => !(err instanceof QuoteValidationError),
     queryFn: async () => {
       if (!route || !market.data) throw new Error("Missing route/market");
       const t0 = performance.now();
-      const price = await getMarketPrice(route.ticker, route.side);
+      const price = await getMarketPrice(
+        network.kalqixBaseUrl,
+        route.ticker,
+        route.side
+      );
       const dt = Math.round(performance.now() - t0);
       log({
         level: "info",
@@ -77,8 +82,8 @@ export function useQuote({
       });
       const rawPrice = rawPriceFromMarketPrice(price);
       return quoteSwap({
-        tokenIn: TOKENS[tokenIn],
-        tokenOut: TOKENS[tokenOut],
+        tokenIn: getToken(network, tokenIn),
+        tokenOut: getToken(network, tokenOut),
         amountIn,
         side: route.side,
         ticker: route.ticker,

@@ -613,6 +613,43 @@ body::before {
   .main { padding: 20px; }
 }
 
+/* ---------- NETWORK TOGGLE ---------- */
+.net-toggle {
+  display: inline-flex;
+  border: 1px solid var(--hairline);
+  background: var(--paper);
+}
+.net-toggle__btn {
+  padding: 7px 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  border-right: 1px solid var(--hairline);
+  transition: background 120ms ease, color 120ms ease;
+  position: relative;
+}
+.net-toggle__btn:last-child { border-right: 0; }
+.net-toggle__btn:hover:not(.is-active) { color: var(--ink); background: var(--paper-warm); }
+.net-toggle__btn.is-active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.net-toggle__btn.is-stub::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+.net-toggle__btn.is-stub.is-active::after {
+  background: var(--paper);
+}
+
 /* ---------- CONNECT BUTTON (custom RainbowKit consumer) ---------- */
 .connect-btn {
   display: inline-flex;

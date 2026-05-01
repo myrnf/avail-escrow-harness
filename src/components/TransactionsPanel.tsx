@@ -1,7 +1,8 @@
 import { Panel, PanelStatus } from "./primitives/Panel";
 import { useIntentStatus } from "../hooks/useIntent";
 import { useIntentTiming } from "../store/intentTiming";
-import { txExplorerUrl } from "../config/chain";
+import { useActiveNetwork } from "../hooks/useActiveNetwork";
+import { txExplorerUrl } from "../config/networks";
 import { shortHash } from "../lib/format";
 import type { SettlementState } from "../lib/intent";
 
@@ -53,6 +54,7 @@ interface Props {
 export function TransactionsPanel({ intentId }: Props) {
   const status = useIntentStatus(intentId);
   const lifecycle = useIntentTiming();
+  const network = useActiveNetwork();
   const data = status.data;
 
   const rows: Row[] = [];
@@ -102,7 +104,7 @@ export function TransactionsPanel({ intentId }: Props) {
             <a
               key={i}
               className="txlist__row"
-              href={txExplorerUrl(r.hash)}
+              href={txExplorerUrl(network, r.hash)}
               target="_blank"
               rel="noopener noreferrer"
             >

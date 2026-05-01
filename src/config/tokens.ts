@@ -1,21 +1,26 @@
 import type { Address } from "viem";
+import type { NetworkConfig } from "./networks";
 
 export type TokenSymbol = "USDC" | "cbBTC";
 
-export interface TokenInfo {
+/** Token metadata that doesn't vary by network: decimals, symbol, brand, glyph. */
+export interface TokenMeta {
   symbol: TokenSymbol;
   name: string;
-  address: Address;
   decimals: number;
   glyph: string;
   brand: string;
 }
 
-export const TOKENS: Record<TokenSymbol, TokenInfo> = {
+/** Combined view: metadata + the address for the active network. */
+export interface TokenInfo extends TokenMeta {
+  address: Address;
+}
+
+export const TOKEN_META: Record<TokenSymbol, TokenMeta> = {
   USDC: {
     symbol: "USDC",
     name: "USD Coin",
-    address: "0x94d655f6cc102d1e7e3f7a0e66fa604779ca8306",
     decimals: 6,
     glyph: "$",
     brand: "#2775CA",
@@ -23,15 +28,17 @@ export const TOKENS: Record<TokenSymbol, TokenInfo> = {
   cbBTC: {
     symbol: "cbBTC",
     name: "Coinbase Wrapped BTC",
-    address: "0xe58c5488de4d67dfb186ef955d412ff4473451a8",
     decimals: 8,
     glyph: "₿",
     brand: "#f7931a",
   },
 };
 
-export const TOKEN_LIST: TokenInfo[] = [TOKENS.USDC, TOKENS.cbBTC];
+export const TOKEN_LIST_META: TokenMeta[] = [TOKEN_META.USDC, TOKEN_META.cbBTC];
 
-export function getToken(symbol: TokenSymbol): TokenInfo {
-  return TOKENS[symbol];
+export function getToken(
+  network: NetworkConfig,
+  symbol: TokenSymbol
+): TokenInfo {
+  return { ...TOKEN_META[symbol], address: network.tokens[symbol] };
 }
