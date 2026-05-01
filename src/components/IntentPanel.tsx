@@ -10,15 +10,9 @@ import {
 } from "../lib/intent";
 import { shortHash } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
-import {
-  useIntentTiming,
-  type StepKey,
-  type TimingStep,
-} from "../store/intentTiming";
+import { type StepKey, type TimingStep } from "../store/intentTiming";
+import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
 
-interface Props {
-  intentId: string | null;
-}
 
 // "submit" is the timeline anchor used to compute the first phase duration —
 // not rendered as its own row (it's always 0ms, so not informative).
@@ -76,11 +70,12 @@ function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(2)}s`;
 }
 
-export function IntentPanel({ intentId }: Props) {
+export function IntentPanel() {
+  const lifecycle = useCurrentLifecycle();
+  const intentId = lifecycle.intentId;
   const status = useIntentStatus(intentId);
   const data = status.data;
   const log = useActivityLog((s) => s.push);
-  const lifecycle = useIntentTiming();
 
   // Live elapsed counter — re-renders every 250ms while in flight.
   const [, force] = useState(0);

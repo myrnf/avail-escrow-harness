@@ -17,45 +17,83 @@ export interface TimingStep {
   tx?: string;
 }
 
-interface State {
+export interface Lifecycle {
   intentId: string | null;
   steps: TimingStep[];
   endedAt: number | null;
-  start: () => void;
-  setIntentId: (id: string) => void;
-  recordStep: (step: TimingStep) => void;
-  end: (at: number) => void;
-  reset: () => void;
 }
 
-export const useIntentTiming = create<State>((set) => ({
+export const EMPTY_LIFECYCLE: Lifecycle = {
   intentId: null,
   steps: [],
   endedAt: null,
-  start: () =>
-    set({
-      intentId: null,
-      endedAt: null,
-      steps: [
-        {
-          key: "submit",
-          at: Date.now(),
-          label: "Confirm swap",
-          ok: true,
+};
+
+interface State {
+  entries: Record<string, Lifecycle>;
+  start: (networkKey: string) => void;
+  setIntentId: (networkKey: string, id: string) => void;
+  recordStep: (networkKey: string, step: TimingStep) => void;
+  end: (networkKey: string, at: number) => void;
+  reset: (networkKey: string) => void;
+}
+
+export const useIntentTiming = create<State>((set) => ({
+  entries: {},
+
+  start: (networkKey) =>
+    set((s) => ({
+      entries: {
+        ...s.entries,
+        [networkKey]: {
+          intentId: null,
+          steps: [
+            { key: "submit", at: Date.now(), label: "Confirm swap", ok: true },
+          ],
+          endedAt: null,
         },
-      ],
-    }),
-  setIntentId: (id) => set({ intentId: id }),
-  recordStep: (step) =>
+      },
+    })),
+
+  setIntentId: (networkKey, id) =>
     set((s) => {
-      // dedupe: a step's first occurrence wins
-      if (s.steps.some((x) => x.key === step.key)) return s;
-      return { ...s, steps: [...s.steps, step] };
+      const cur = s.entries[networkKey] ?? EMPTY_LIFECYCLE;
+      return {
+        entries: { ...s.entries, [networkKey]: { ...cur, intentId: id } },
+      };
     }),
-  end: (at) => set({ endedAt: at }),
-  reset: () => set({ intentId: null, steps: [], endedAt: null }),
+
+  recordStep: (networkKey, step) =>
+    set((s) => {
+      const cur = s.entries[networkKey] ?? EMPTY_LIFECYCLE;
+      // dedupe — first occurrence of a key wins
+      if (cur.steps.some((x) => x.key === step.key)) return s;
+      return {
+        entries: {
+          ...s.entries,
+          [networkKey]: { ...cur, steps: [...cur.steps, step] },
+        },
+      };
+    }),
+
+  // Idempotent — once endedAt is set, additional end() calls are ignored so
+  // returning to a settled lifecycle (e.g. after a network round-trip) doesn't
+  // reset the historical total time.
+  end: (networkKey, at) =>
+    set((s) => {
+      const cur = s.entries[networkKey] ?? EMPTY_LIFECYCLE;
+      if (cur.endedAt !== null) return s;
+      return {
+        entries: { ...s.entries, [networkKey]: { ...cur, endedAt: at } },
+      };
+    }),
+
+  reset: (networkKey) =>
+    set((s) => ({
+      entries: { ...s.entries, [networkKey]: EMPTY_LIFECYCLE },
+    })),
 }));
 
-export function isInFlight(steps: TimingStep[], endedAt: number | null): boolean {
-  return steps.length > 0 && endedAt === null;
+export function isInFlight(lc: Lifecycle): boolean {
+  return lc.steps.length > 0 && lc.endedAt === null;
 }

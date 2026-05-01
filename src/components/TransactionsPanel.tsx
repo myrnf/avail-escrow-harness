@@ -1,6 +1,6 @@
 import { Panel, PanelStatus } from "./primitives/Panel";
 import { useIntentStatus } from "../hooks/useIntent";
-import { useIntentTiming } from "../store/intentTiming";
+import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
 import { useActiveNetwork } from "../hooks/useActiveNetwork";
 import { txExplorerUrl } from "../config/networks";
 import { shortHash } from "../lib/format";
@@ -51,13 +51,9 @@ function settlementRows(s: SettlementState): Row[] {
   return [];
 }
 
-interface Props {
-  intentId: string | null;
-}
-
-export function TransactionsPanel({ intentId }: Props) {
-  const status = useIntentStatus(intentId);
-  const lifecycle = useIntentTiming();
+export function TransactionsPanel() {
+  const lifecycle = useCurrentLifecycle();
+  const status = useIntentStatus(lifecycle.intentId);
   const network = useActiveNetwork();
   const data = status.data;
 

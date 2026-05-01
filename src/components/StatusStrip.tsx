@@ -1,12 +1,11 @@
 import { useBlockNumber } from "wagmi";
 import { useActiveNetwork } from "../hooks/useActiveNetwork";
+import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
 
-interface Props {
-  intentId: string | null;
-}
-
-export function StatusStrip({ intentId }: Props) {
+export function StatusStrip() {
   const network = useActiveNetwork();
+  const lifecycle = useCurrentLifecycle();
+  const intentId = lifecycle.intentId;
   const block = useBlockNumber({ watch: true, chainId: network.chain.id });
 
   return (

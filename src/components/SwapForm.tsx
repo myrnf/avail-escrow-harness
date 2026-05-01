@@ -15,14 +15,13 @@ import { useDeposit } from "../hooks/useDeposit";
 import { useActiveNetwork } from "../hooks/useActiveNetwork";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
-import { useIntentTiming } from "../store/intentTiming";
+import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
 
 interface Props {
   isInFlight: boolean;
-  onIntentCreated: (id: string) => void;
 }
 
-export function SwapForm({ isInFlight, onIntentCreated }: Props) {
+export function SwapForm({ isInFlight }: Props) {
   const { address, isConnected } = useAccount();
   const network = useActiveNetwork();
   const [tokenIn, setTokenIn] = useState<TokenSymbol>("USDC");
@@ -30,7 +29,7 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
   const [amountInStr, setAmountInStr] = useState("");
   const [slippageBps, setSlippageBps] = useState<number>(DEFAULT_SLIPPAGE_BPS);
   const log = useActivityLog((s) => s.push);
-  const lifecycle = useIntentTiming();
+  const lifecycle = useCurrentLifecycle();
 
   const inInfo = getToken(network, tokenIn);
   const outInfo = getToken(network, tokenOut);
@@ -86,14 +85,14 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
     return () => timers.forEach(clearTimeout);
   }, [approve.isSuccess]);
 
-  // Reset local swap state when the harness network changes — addresses,
-  // escrow contract, and any in-flight intent are no longer applicable.
+  // Reset local form + mutation state when the harness network changes —
+  // addresses and escrow contract differ. The lifecycle store is keyed by
+  // network and preserves history per-network, so we don't reset it here.
   useEffect(() => {
     setAmountInStr("");
     createIntent.reset();
     deposit.reset();
     approve.reset();
-    lifecycle.reset();
   }, [network.key]);
 
   // ---------- LIFECYCLE RECORDING ----------
@@ -108,7 +107,6 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
         ok: true,
         detail: `solver ${createIntent.data.solver_address.slice(0, 6)}…${createIntent.data.solver_address.slice(-4)}`,
       });
-      onIntentCreated(createIntent.data.id);
     }
   }, [createIntent.isSuccess, createIntent.data?.id]);
 
