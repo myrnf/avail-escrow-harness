@@ -71,9 +71,19 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
     ? Math.max(0, 5 - Math.floor((Date.now() - quote.data.fetchedAt) / 1000))
     : null;
 
-  // Refetch allowance after approve confirms.
+  // Refetch allowance after approve confirms — with a backoff retry chain to
+  // tolerate RPC eventual-consistency lag (public Base Sepolia RPC round-robins
+  // across nodes, so the post-receipt read can land on a node that hasn't seen
+  // the new block yet).
   useEffect(() => {
-    if (approve.isSuccess) void allowance.refetch();
+    if (!approve.isSuccess) return;
+    const delays = [400, 1200, 2500, 5000, 10000];
+    const timers = delays.map((d) =>
+      setTimeout(() => {
+        void allowance.refetch();
+      }, d)
+    );
+    return () => timers.forEach(clearTimeout);
   }, [approve.isSuccess]);
 
   // Reset local swap state when the harness network changes — addresses,
