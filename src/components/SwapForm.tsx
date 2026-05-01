@@ -125,7 +125,7 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
       lifecycle.recordStep({
         key: "deposited",
         at: Date.now(),
-        label: "IntentDeposited",
+        label: "User deposited (IntentDeposited)",
         ok: true,
         tx: deposit.txHash,
       });

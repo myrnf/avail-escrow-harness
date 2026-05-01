@@ -22,13 +22,18 @@ interface Props {
 
 // "submit" is the timeline anchor used to compute the first phase duration —
 // not rendered as its own row (it's always 0ms, so not informative).
+// "deposit" (broadcast) is still recorded in the lifecycle so the Transactions
+// panel can show the tx hash the moment MetaMask returns, but it's collapsed
+// into the "deposit confirmed" row in this timeline — duration on that row is
+// the full sign-and-mine wall time.
 const STEP_ORDER: { key: StepKey; label: string }[] = [
   { key: "createIntent", label: "POST /intent" },
-  { key: "deposit", label: "Deposit broadcast" },
-  { key: "deposited", label: "IntentDeposited" },
+  { key: "deposited", label: "User deposited (IntentDeposited)" },
   { key: "fill", label: "KalqiX fill" },
   { key: "settled", label: "Settlement" },
 ];
+
+const RENDERED_KEYS = new Set<StepKey>(STEP_ORDER.map((s) => s.key));
 
 function describeOrderState(s: OrderState): string {
   if (typeof s === "string") return s;
@@ -124,10 +129,10 @@ export function IntentPanel({ intentId }: Props) {
     let tx: string | undefined;
     if (typeof s === "object") {
       if ("Settled" in s) {
-        label = "IntentSettled";
+        label = "User filled (IntentSettled)";
         tx = s.Settled.settlement_tx_hash;
       } else if ("Unlocked" in s) {
-        label = "IntentUnlocked";
+        label = "User refunded (IntentUnlocked)";
         tx = s.Unlocked.tx_hash;
         ok = false;
       } else if ("Rejected" in s) {
@@ -182,12 +187,17 @@ export function IntentPanel({ intentId }: Props) {
   }, [lifecycle.steps]);
 
   // Per-phase durations: each step's `at` minus its predecessor's `at` (in
-  // chronological order). The first non-submit step's predecessor is `submit`.
+  // chronological order, restricted to steps that actually render). Hidden
+  // intermediate steps (e.g. `deposit` broadcast) don't contribute to a phase
+  // boundary — `deposited`'s duration spans signing + block confirmation.
   const durationByKey = useMemo(() => {
     const map = new Map<StepKey, number>();
-    for (let i = 1; i < lifecycle.steps.length; i++) {
-      const step = lifecycle.steps[i];
-      const prev = lifecycle.steps[i - 1];
+    const filtered = lifecycle.steps.filter(
+      (s) => s.key === "submit" || RENDERED_KEYS.has(s.key)
+    );
+    for (let i = 1; i < filtered.length; i++) {
+      const step = filtered[i];
+      const prev = filtered[i - 1];
       if (step && prev) map.set(step.key, step.at - prev.at);
     }
     return map;
