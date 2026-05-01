@@ -20,8 +20,9 @@ interface Props {
   intentId: string | null;
 }
 
+// "submit" is the timeline anchor used to compute the first phase duration —
+// not rendered as its own row (it's always 0ms, so not informative).
 const STEP_ORDER: { key: StepKey; label: string }[] = [
-  { key: "submit", label: "Confirm swap" },
   { key: "createIntent", label: "POST /intent" },
   { key: "deposit", label: "Deposit broadcast" },
   { key: "deposited", label: "IntentDeposited" },
@@ -180,6 +181,18 @@ export function IntentPanel({ intentId }: Props) {
     return map;
   }, [lifecycle.steps]);
 
+  // Per-phase durations: each step's `at` minus its predecessor's `at` (in
+  // chronological order). The first non-submit step's predecessor is `submit`.
+  const durationByKey = useMemo(() => {
+    const map = new Map<StepKey, number>();
+    for (let i = 1; i < lifecycle.steps.length; i++) {
+      const step = lifecycle.steps[i];
+      const prev = lifecycle.steps[i - 1];
+      if (step && prev) map.set(step.key, step.at - prev.at);
+    }
+    return map;
+  }, [lifecycle.steps]);
+
   const elapsedMs = useMemo(() => {
     if (!startAt) return 0;
     const end = lifecycle.endedAt ?? Date.now();
@@ -250,7 +263,7 @@ export function IntentPanel({ intentId }: Props) {
                 step &&
                 lifecycle.steps[lifecycle.steps.length - 1]?.key === key &&
                 lifecycle.endedAt === null;
-              const elapsedFromStart = step && startAt ? step.at - startAt : null;
+              const duration = durationByKey.get(key);
               const cls = step
                 ? step.ok === false
                   ? "intent__step is-err"
@@ -264,9 +277,7 @@ export function IntentPanel({ intentId }: Props) {
                     {step ? (step.ok === false ? "●" : "●") : "·"}
                   </span>
                   <span className="when">
-                    {elapsedFromStart !== null
-                      ? `+${fmtMs(elapsedFromStart)}`
-                      : "—"}
+                    {duration !== undefined ? fmtMs(duration) : "—"}
                   </span>
                   <span className="what">{step?.label ?? label}</span>
                   <span className="extra">
