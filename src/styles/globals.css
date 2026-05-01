@@ -154,6 +154,20 @@ body::before {
   text-transform: uppercase;
   color: var(--ink);
   font-weight: 500;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.panel__head-affix {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  font-weight: 400;
+  color: var(--ink-faint);
+}
+.panel__head-affix.is-real {
+  color: var(--oxide);
 }
 
 .panel__status {

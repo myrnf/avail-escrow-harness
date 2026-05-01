@@ -260,9 +260,17 @@ export function SwapForm({ isInFlight }: Props) {
   const error = createIntent.error || deposit.error || approve.error;
   const formDisabled = isInFlight || approve.isPending || !network.configured;
 
+  const stakesAffix =
+    network.key === "mainnet" ? (
+      <span className="panel__head-affix is-real">(real money)</span>
+    ) : (
+      <span className="panel__head-affix is-fake">(fake money)</span>
+    );
+
   return (
     <Panel
       title="Swap"
+      titleAffix={stakesAffix}
       status={
         isInFlight ? (
           <PanelStatus state="warn">Locked</PanelStatus>

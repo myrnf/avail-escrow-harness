@@ -2,17 +2,21 @@ import type { ReactNode } from "react";
 
 interface PanelProps {
   title: string;
+  titleAffix?: ReactNode;
   status?: ReactNode;
   children: ReactNode;
 }
 
-export function Panel({ title, status, children }: PanelProps) {
+export function Panel({ title, titleAffix, status, children }: PanelProps) {
   return (
     <article className="panel">
       <span className="reg-tr" />
       <span className="reg-bl" />
       <header className="panel__head">
-        <h2>{title}</h2>
+        <h2>
+          {title}
+          {titleAffix ?? null}
+        </h2>
         {status ?? null}
       </header>
       {children}
