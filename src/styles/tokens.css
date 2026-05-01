@@ -1,0 +1,23 @@
+:root {
+  --paper: #f7f4ed;
+  --paper-warm: #f1ede2;
+  --surface: #ffffff;
+  --ink: #0e0e0c;
+  --ink-muted: #5c5c57;
+  --ink-faint: #8a877f;
+  --hairline: #d9d6cd;
+  --hairline-soft: #e8e4d9;
+
+  --cobalt: #1e40af;
+  --cobalt-soft: #e6ebf8;
+  --forest: #0f5132;
+  --forest-soft: #e0eee5;
+  --oxide: #9a2c0e;
+  --oxide-soft: #f3e3dc;
+  --amber: #8a5a00;
+  --amber-soft: #f4e9cf;
+
+  --font-display: "Instrument Serif", "Times New Roman", serif;
+  --font-ui: "Inter Tight", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Menlo", monospace;
+}
