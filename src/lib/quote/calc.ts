@@ -20,13 +20,21 @@ export class QuoteValidationError extends Error {
 
 /**
  * KalqiX returns `step_size` and `tick_size` as decimal strings in **human
- * units** (e.g. "0.0001" BTC). Convert to base units of the relevant asset.
+ * units** (e.g. "0.0001" BTC, "0.01" USDC/BTC). Convert to base units.
  *
  * `min_quantity`, `min_trade_size`, `min_price`, and `price` are returned as
  * integer strings already in **base units** — those parse straight to BigInt.
  */
 export function stepSizeBaseUnits(market: KalqiXMarket): bigint {
+  // Constrains the *base-asset* quantity side of an order.
   return parseUnits(market.step_size, market.base_asset_decimals);
+}
+
+export function tickSizeBaseUnits(market: KalqiXMarket): bigint {
+  // tick_size is a decimal price increment (quote-per-1-base, in human units).
+  // The on-chain rule is: the quote-asset side of an order must be a multiple
+  // of (tick_size scaled to quote-asset base units).
+  return parseUnits(market.tick_size, market.quote_asset_decimals);
 }
 
 /**
@@ -123,23 +131,27 @@ export function quoteSwap(input: QuoteInput): Quote {
 
   const baseScale = 10n ** BigInt(market.base_asset_decimals);
   const stepSize = stepSizeBaseUnits(market);
+  const tickSize = tickSizeBaseUnits(market);
   const minQuantity = BigInt(market.min_quantity);
   const minTradeSize = BigInt(market.min_trade_size);
 
   // ---------- 1. derive effective input + gross output ----------
+  // Rule: BASE-asset side of an order aligns to step_size; QUOTE-asset side
+  // aligns to tick_size (scaled to quote base units).
   let effectiveAmountIn = amountIn;
   let amountOutGross: bigint;
 
   if (side === "BUY") {
-    // amountIn is in quote-asset base units — must clear min_trade_size.
-    if (amountIn < minTradeSize) {
+    // amount_in is quote → align to tick.
+    effectiveAmountIn = floorToStep(amountIn, tickSize);
+    if (effectiveAmountIn < minTradeSize) {
       throw new QuoteValidationError(
         `Below market minimum trade size: ${formatBaseUnits(minTradeSize, market.quote_asset_decimals)} ${market.quote_asset} required.`
       );
     }
-    amountOutGross = (amountIn * baseScale) / rawPrice;
+    amountOutGross = (effectiveAmountIn * baseScale) / rawPrice;
   } else {
-    // SELL: amount_in is the base-asset side, must align to step_size.
+    // amount_in is base → align to step.
     effectiveAmountIn = floorToStep(amountIn, stepSize);
     if (effectiveAmountIn === 0n || effectiveAmountIn < minQuantity) {
       throw new QuoteValidationError(
@@ -148,7 +160,7 @@ export function quoteSwap(input: QuoteInput): Quote {
     }
     amountOutGross = (effectiveAmountIn * rawPrice) / baseScale;
     if (amountOutGross < minTradeSize) {
-      throw new Error(
+      throw new QuoteValidationError(
         `Below market minimum trade size: ${formatBaseUnits(minTradeSize, market.quote_asset_decimals)} ${market.quote_asset} notional required.`
       );
     }
@@ -159,8 +171,9 @@ export function quoteSwap(input: QuoteInput): Quote {
   let amountOut = (amountOutGross * (BPS_DENOM - feeBps)) / BPS_DENOM;
   let amountOutMin = (amountOut * (BPS_DENOM - BigInt(slippageBps))) / BPS_DENOM;
 
-  // ---------- 3. step alignment on the base-asset side of output ----------
+  // ---------- 3. align the OUTPUT side to its grid ----------
   if (side === "BUY") {
+    // amount_out is base → step grid.
     amountOut = floorToStep(amountOut, stepSize);
     amountOutMin = floorToStep(amountOutMin, stepSize);
     if (amountOutMin < minQuantity) {
@@ -172,6 +185,15 @@ export function quoteSwap(input: QuoteInput): Quote {
         ((BPS_DENOM - feeBps) * (BPS_DENOM - BigInt(slippageBps)));
       throw new QuoteValidationError(
         `Below market minimum: try at least ${formatBaseUnits(neededIn, market.quote_asset_decimals)} ${market.quote_asset} (KalqiX requires ≥ ${formatBaseUnits(minQuantity, market.base_asset_decimals)} ${market.base_asset}).`
+      );
+    }
+  } else {
+    // amount_out is quote → tick grid.
+    amountOut = floorToStep(amountOut, tickSize);
+    amountOutMin = floorToStep(amountOutMin, tickSize);
+    if (amountOutMin < minTradeSize) {
+      throw new QuoteValidationError(
+        `Below market minimum trade size: ${formatBaseUnits(minTradeSize, market.quote_asset_decimals)} ${market.quote_asset} notional required after fees + slippage.`
       );
     }
   }
