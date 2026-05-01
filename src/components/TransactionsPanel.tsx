@@ -10,7 +10,7 @@ interface Row {
   label: string;
   hash: string;
   state: "ok" | "warn" | "live" | "idle" | "err";
-  hint?: string;
+  hint?: string | string[];
 }
 
 function settlementRows(s: SettlementState): Row[] {
@@ -25,20 +25,16 @@ function settlementRows(s: SettlementState): Row[] {
         hint: "pre-settlement allowance",
       });
     }
-    // Settlement is one atomic on-chain action with two effects. Surface both
-    // legs as distinct rows so testers can see the dual-leg semantics; both
-    // rows link to the same transaction.
+    // Settlement is one atomic on-chain action with two effects — surface
+    // both as a two-line hint under a single row.
     rows.push({
-      label: "Settlement → user",
+      label: "Settlement",
       hash: s.Settled.settlement_tx_hash,
       state: "ok",
-      hint: "output token delivered to user",
-    });
-    rows.push({
-      label: "Settlement → solver",
-      hash: s.Settled.settlement_tx_hash,
-      state: "ok",
-      hint: "escrowed input released to solver",
+      hint: [
+        "output token delivered to user",
+        "escrowed input released to solver",
+      ],
     });
     return rows;
   }
@@ -123,7 +119,13 @@ export function TransactionsPanel({ intentId }: Props) {
                 </span>
                 <span className="txlist__hash">{shortHash(r.hash)}</span>
               </div>
-              {r.hint ? <div className="txlist__hint">{r.hint}</div> : null}
+              {r.hint ? (
+                <div className="txlist__hint">
+                  {(Array.isArray(r.hint) ? r.hint : [r.hint]).map((line, j) => (
+                    <div key={j}>{line}</div>
+                  ))}
+                </div>
+              ) : null}
             </a>
           ))}
         </div>

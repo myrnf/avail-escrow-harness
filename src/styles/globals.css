@@ -522,6 +522,7 @@ body::before {
   margin-top: 4px;
   letter-spacing: 0.04em;
 }
+.txlist__hint > div + div { margin-top: 2px; }
 
 /* ---------- LOG ---------- */
 .log {
