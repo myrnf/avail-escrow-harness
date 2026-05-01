@@ -16,22 +16,30 @@ interface Row {
 function settlementRows(s: SettlementState): Row[] {
   if (typeof s === "string") return [];
   if ("Settled" in s) {
-    const rows: Row[] = [
-      {
-        label: "Settlement",
-        hash: s.Settled.settlement_tx_hash,
-        state: "ok",
-        hint: "solver delivered output to user",
-      },
-    ];
+    const rows: Row[] = [];
     if (s.Settled.approval_tx_hash) {
-      rows.unshift({
+      rows.push({
         label: "Solver approval",
         hash: s.Settled.approval_tx_hash,
         state: "ok",
         hint: "pre-settlement allowance",
       });
     }
+    // Settlement is one atomic on-chain action with two effects. Surface both
+    // legs as distinct rows so testers can see the dual-leg semantics; both
+    // rows link to the same transaction.
+    rows.push({
+      label: "Settlement → user",
+      hash: s.Settled.settlement_tx_hash,
+      state: "ok",
+      hint: "output token delivered to user",
+    });
+    rows.push({
+      label: "Settlement → solver",
+      hash: s.Settled.settlement_tx_hash,
+      state: "ok",
+      hint: "escrowed input released to solver",
+    });
     return rows;
   }
   if ("Unlocked" in s) {

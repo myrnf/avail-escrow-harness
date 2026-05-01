@@ -102,7 +102,10 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
     }
   }, [createIntent.isSuccess, createIntent.data?.id]);
 
-  // deposit tx broadcast → record.
+  // deposit tx broadcast → record + clear the form. Once the user has signed
+  // the deposit there's no rolling back this swap, so the form should be
+  // ready for the next one. createIntent/deposit failures *before* this point
+  // intentionally leave the form populated so the user can retry.
   useEffect(() => {
     if (deposit.txHash) {
       lifecycle.recordStep({
@@ -112,6 +115,7 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
         ok: true,
         tx: deposit.txHash,
       });
+      setAmountInStr("");
     }
   }, [deposit.txHash]);
 
@@ -208,6 +212,18 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
   } else if (!isConnected) {
     ctaLabel = "Connect wallet";
     ctaDisabled = true;
+  } else if (createIntent.isPending) {
+    ctaLabel = "Creating intent…";
+    ctaDisabled = true;
+    ctaShowSpinner = true;
+  } else if (deposit.isPending) {
+    ctaLabel = "Awaiting deposit…";
+    ctaDisabled = true;
+    ctaShowSpinner = true;
+  } else if (isInFlight) {
+    ctaLabel = "Swap in flight";
+    ctaDisabled = true;
+    ctaShowSpinner = true;
   } else if (amountIn === 0n) {
     ctaLabel = "Enter an amount";
     ctaDisabled = true;
@@ -231,18 +247,6 @@ export function SwapForm({ isInFlight, onIntentCreated }: Props) {
       ctaAction = () =>
         approve.approve(inInfo.address, network.escrowContract, amountIn);
     }
-  } else if (createIntent.isPending) {
-    ctaLabel = "Creating intent…";
-    ctaDisabled = true;
-    ctaShowSpinner = true;
-  } else if (deposit.isPending) {
-    ctaLabel = "Awaiting deposit…";
-    ctaDisabled = true;
-    ctaShowSpinner = true;
-  } else if (isInFlight) {
-    ctaLabel = "Swap in flight";
-    ctaDisabled = true;
-    ctaShowSpinner = true;
   }
 
   const error = createIntent.error || deposit.error || approve.error;
