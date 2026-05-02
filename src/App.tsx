@@ -2,8 +2,8 @@ import { Header } from "./components/Header";
 import { SwapForm } from "./components/SwapForm";
 import { IntentPanel } from "./components/IntentPanel";
 import { ActivityLog } from "./components/ActivityLog";
-import { StatusStrip } from "./components/StatusStrip";
 import { TransactionsPanel } from "./components/TransactionsPanel";
+import { ContractsPanel } from "./components/ContractsPanel";
 import { useCurrentLifecycle } from "./hooks/useCurrentLifecycle";
 import { isInFlight } from "./store/intentTiming";
 
@@ -24,11 +24,13 @@ export default function App() {
               <IntentPanel />
               <TransactionsPanel />
             </div>
-            <ActivityLog />
+            <div className="workspace-row">
+              <ContractsPanel />
+              <ActivityLog />
+            </div>
           </div>
         </section>
       </main>
-      <StatusStrip />
     </div>
   );
 }

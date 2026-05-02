@@ -80,3 +80,10 @@ export function networkForChainId(id: number | undefined): NetworkConfig | null 
 export function txExplorerUrl(network: NetworkConfig, hash: string): string {
   return `${network.explorerBaseUrl}/tx/${hash}`;
 }
+
+export function addressExplorerUrl(
+  network: NetworkConfig,
+  address: string
+): string {
+  return `${network.explorerBaseUrl}/address/${address}`;
+}
