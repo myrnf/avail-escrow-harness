@@ -1,7 +1,8 @@
 import { base, baseSepolia } from "wagmi/chains";
 import type { Address, Chain } from "viem";
 
-export type NetworkKey = "testnet" | "mainnet";
+export type NetworkKey = "testnet" | "canary" | "mainnet";
+export type Stakes = "fake" | "real";
 
 export interface TokenAddresses {
   USDC: Address;
@@ -13,10 +14,14 @@ export interface NetworkConfig {
   label: string;
   shortLabel: string;
   chain: Chain;
+  /** "fake" → testnet (no real value); "real" → real funds at risk. */
+  stakes: Stakes;
   rpcUrl: string;
   escrowContract: Address;
   explorerBaseUrl: string;
   kalqixBaseUrl: string;
+  /** URL-form ticker for the cbBTC ↔ USDC market on this KalqiX env. */
+  kalqixMarketTicker: string;
   availEscrowBaseUrl: string;
   tokens: TokenAddresses;
   /** false → harness shows "not configured" UX and disables swap. */
@@ -31,11 +36,13 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     label: "Base Sepolia",
     shortLabel: "TESTNET",
     chain: baseSepolia,
+    stakes: "fake",
     rpcUrl:
       import.meta.env.VITE_BASE_SEPOLIA_RPC || "https://sepolia.base.org",
     escrowContract: "0xe87e175EE35Ff028338a0c8D0F28c06427840a07",
     explorerBaseUrl: "https://sepolia.basescan.org",
     kalqixBaseUrl: "https://testnet-api.kalqix.com/v1",
+    kalqixMarketTicker: "BTC_USDC",
     availEscrowBaseUrl: "https://avail-escrow-test.availproject.org",
     tokens: {
       USDC: "0x94d655f6cc102d1e7e3f7a0e66fa604779ca8306",
@@ -44,22 +51,45 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     configured: true,
   },
 
-  // ---- Mainnet — placeholders. Fill in once supplied. ----
-  // To enable: set every TODO field, set `configured: true`.
-  mainnet: {
-    key: "mainnet",
-    label: "Base",
-    shortLabel: "MAINNET",
+  canary: {
+    key: "canary",
+    label: "Base Canary",
+    shortLabel: "CANARY",
     chain: base,
+    stakes: "real",
     rpcUrl:
       import.meta.env.VITE_BASE_MAINNET_RPC || "https://mainnet.base.org",
-    escrowContract: ZERO_ADDRESS, // TODO: supply mainnet escrow contract
+    escrowContract: "0xe87e175EE35Ff028338a0c8D0F28c06427840a07",
     explorerBaseUrl: "https://basescan.org",
     kalqixBaseUrl: "https://api.kalqix.com/v1",
-    availEscrowBaseUrl: "", // TODO: supply mainnet Avail Escrow base URL
+    kalqixMarketTicker: "cbBTC_USDC",
+    availEscrowBaseUrl: "https://escrow-canary.availproject.org",
     tokens: {
-      USDC: ZERO_ADDRESS, // TODO: supply mainnet USDC address
-      cbBTC: ZERO_ADDRESS, // TODO: supply mainnet cbBTC address
+      USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+    },
+    configured: true,
+  },
+
+  // ---- Production mainnet — stub. Fill in once Avail ships prod escrow. ----
+  // To enable: set escrowContract + availEscrowBaseUrl, flip configured: true.
+  // Token addresses are already canonical Circle USDC / Coinbase cbBTC.
+  mainnet: {
+    key: "mainnet",
+    label: "Base Mainnet",
+    shortLabel: "MAINNET",
+    chain: base,
+    stakes: "real",
+    rpcUrl:
+      import.meta.env.VITE_BASE_MAINNET_RPC || "https://mainnet.base.org",
+    escrowContract: ZERO_ADDRESS, // TODO: production escrow contract
+    explorerBaseUrl: "https://basescan.org",
+    kalqixBaseUrl: "https://api.kalqix.com/v1",
+    kalqixMarketTicker: "cbBTC_USDC",
+    availEscrowBaseUrl: "", // TODO: production Avail Escrow base URL
+    tokens: {
+      USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
     },
     configured: false,
   },

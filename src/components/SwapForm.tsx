@@ -261,7 +261,7 @@ export function SwapForm({ isInFlight }: Props) {
   const formDisabled = isInFlight || approve.isPending || !network.configured;
 
   const stakesAffix =
-    network.key === "mainnet" ? (
+    network.stakes === "real" ? (
       <span className="panel__head-affix is-real">(real money)</span>
     ) : (
       <span className="panel__head-affix is-fake">(fake money)</span>

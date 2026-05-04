@@ -1,9 +1,11 @@
 import type { TokenSymbol } from "./tokens";
+import type { NetworkConfig } from "./networks";
 
 /**
  * Mapping from (tokenIn, tokenOut) → KalqiX market + side.
- * KalqiX uses BTC as the base ticker; the Avail solver routes cbBTC through it.
- * Same routing on testnet and mainnet.
+ * The market ticker comes from the active network — testnet uses BTC_USDC,
+ * canary/mainnet use cbBTC_USDC. Avail's solver handles the cbBTC<->BTC
+ * unification on testnet under the hood.
  *
  * See PLAN.md §11.1 — load-bearing assumption, verified at app boot via /markets.
  */
@@ -13,16 +15,15 @@ export interface MarketRoute {
 }
 
 export function routeFor(
+  network: NetworkConfig,
   tokenIn: TokenSymbol,
   tokenOut: TokenSymbol
 ): MarketRoute | null {
   if (tokenIn === "USDC" && tokenOut === "cbBTC") {
-    return { ticker: "BTC_USDC", side: "BUY" };
+    return { ticker: network.kalqixMarketTicker, side: "BUY" };
   }
   if (tokenIn === "cbBTC" && tokenOut === "USDC") {
-    return { ticker: "BTC_USDC", side: "SELL" };
+    return { ticker: network.kalqixMarketTicker, side: "SELL" };
   }
   return null;
 }
-
-export const SUPPORTED_MARKETS = ["BTC_USDC"] as const;

@@ -101,7 +101,7 @@ export function ContractsPanel() {
               </div>
             ))}
           </div>
-          {network.key === "testnet" ? (
+          {network.stakes === "fake" ? (
             <div className="contracts__disclaimer">
               USDC and cbBTC are KalqiX's Base Sepolia test deployments — not
               Circle / Coinbase canonical addresses. Fund your test wallet from

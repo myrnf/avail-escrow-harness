@@ -45,8 +45,11 @@ export function useQuote({
   enabled = true,
 }: QuoteArgs) {
   const network = useActiveNetwork();
-  const route = useMemo(() => routeFor(tokenIn, tokenOut), [tokenIn, tokenOut]);
-  const market = useMarket(route?.ticker ?? "BTC_USDC");
+  const route = useMemo(
+    () => routeFor(network, tokenIn, tokenOut),
+    [network, tokenIn, tokenOut]
+  );
+  const market = useMarket(route?.ticker ?? network.kalqixMarketTicker);
   const log = useActivityLog((s) => s.push);
 
   const query = useQuery({
