@@ -27,10 +27,17 @@ export async function createIntent(
       0
     );
   }
+  // Avail's API is case-sensitive on its asset registry — checksummed addresses
+  // produce "No asset was found for the 'token_in' field." Normalize to lower.
+  const normalized: CreateIntentRequest = {
+    ...body,
+    token_in: body.token_in.toLowerCase() as typeof body.token_in,
+    token_out: body.token_out.toLowerCase() as typeof body.token_out,
+  };
   const res = await fetch(`${baseUrl}/intent`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(normalized),
   });
 
   let envelope: CreateIntentEnvelope;
