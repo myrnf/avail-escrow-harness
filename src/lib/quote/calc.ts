@@ -89,6 +89,12 @@ function floorToStep(amount: bigint, step: bigint): bigint {
   return (amount / step) * step;
 }
 
+/** Ceil `amount` to the nearest multiple of `step`. Useful for "smallest step-aligned value ≥ X". */
+function ceilToStep(amount: bigint, step: bigint): bigint {
+  if (step <= 1n) return amount;
+  return ((amount + step - 1n) / step) * step;
+}
+
 /**
  * Compute amountOut given a single-level KalqiX price.
  *
@@ -154,8 +160,11 @@ export function quoteSwap(input: QuoteInput): Quote {
     // amount_in is base → align to step.
     effectiveAmountIn = floorToStep(amountIn, stepSize);
     if (effectiveAmountIn === 0n || effectiveAmountIn < minQuantity) {
+      // KalqiX's min_quantity isn't necessarily a multiple of step_size, so the
+      // real practical floor is the smallest step-aligned value ≥ min_quantity.
+      const practicalMin = ceilToStep(minQuantity, stepSize);
       throw new QuoteValidationError(
-        `Below market minimum: KalqiX requires ≥ ${formatBaseUnits(minQuantity, market.base_asset_decimals)} ${market.base_asset} per swap.`
+        `Below market minimum: try at least ${formatBaseUnits(practicalMin, market.base_asset_decimals)} ${market.base_asset} (KalqiX requires ≥ ${formatBaseUnits(minQuantity, market.base_asset_decimals)} ${market.base_asset} on a ${formatBaseUnits(stepSize, market.base_asset_decimals)} step).`
       );
     }
     amountOutGross = (effectiveAmountIn * rawPrice) / baseScale;
