@@ -13,6 +13,7 @@ import { useTokenBalance, useTokenAllowance, useApprove } from "../hooks/useErc2
 import { useCreateIntent } from "../hooks/useIntent";
 import { useDeposit } from "../hooks/useDeposit";
 import { useActiveNetwork } from "../hooks/useActiveNetwork";
+import { usePermit } from "../hooks/usePermit";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
 import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
@@ -58,6 +59,9 @@ export function SwapForm({ isInFlight }: Props) {
   const approve = useApprove();
   const createIntent = useCreateIntent();
   const deposit = useDeposit();
+  const { collectPermit } = usePermit();
+  const [permitSigning, setPermitSigning] = useState(false);
+  const [permitError, setPermitError] = useState<Error | null>(null);
 
   // Quote refresh countdown.
   const [tick, setTick] = useState(0);
@@ -93,6 +97,7 @@ export function SwapForm({ isInFlight }: Props) {
     createIntent.reset();
     deposit.reset();
     approve.reset();
+    setPermitError(null);
   }, [network.key]);
 
   // ---------- LIFECYCLE RECORDING ----------
@@ -179,10 +184,17 @@ export function SwapForm({ isInFlight }: Props) {
       ? allowance.data < amountIn
       : false;
 
+  // When the token supports EIP-2612 and allowance is insufficient, the permit
+  // signature replaces the separate approve() tx — one wallet popup for the
+  // whole swap. Without permit support, we keep the two-tx fallback (approve
+  // first, then confirm).
+  const usePermitFlow = needsApprove && inInfo.supportsPermit;
+
   async function onConfirm() {
     if (!quote.data) return;
     try {
       lifecycle.start();
+      setPermitError(null);
       const fresh = await quote.refetch();
       const q = fresh.data ?? quote.data;
       log({
@@ -190,12 +202,41 @@ export function SwapForm({ isInFlight }: Props) {
         channel: "QUOTE",
         message: `submit · ${fmtAmount(q.amountIn, q.amountInDecimals)} ${tokenIn} → min ${fmtAmount(q.amountOutMin, q.amountOutDecimals)} ${tokenOut}`,
       });
+
+      let permit: string | null = null;
+      if (usePermitFlow && address) {
+        try {
+          setPermitSigning(true);
+          // 1-hour permit deadline gives wide margin over Avail's ~60s
+          // server-side intent deadline. The permit lives only for this tx.
+          const permitDeadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+          permit = await collectPermit({
+            token: inInfo,
+            spender: network.escrowContract,
+            value: q.amountIn,
+            deadline: permitDeadline,
+          });
+        } catch (e) {
+          const err = e instanceof Error ? e : new Error(String(e));
+          setPermitError(err);
+          log({
+            level: "warn",
+            channel: "SIG",
+            message: `permit signature rejected · ${err.message}`,
+          });
+          throw err;
+        } finally {
+          setPermitSigning(false);
+        }
+      }
+
       const intent = await createIntent.mutateAsync({
         token_in: inInfo.address,
         token_out: outInfo.address,
         amount_in: q.amountIn.toString(),
         amount_out: q.amountOutMin.toString(),
         client_intent_id: `harness-${Date.now()}`,
+        permit,
       });
       deposit.deposit({
         to: intent.contract_address,
@@ -203,7 +244,8 @@ export function SwapForm({ isInFlight }: Props) {
         value: 0n,
       });
     } catch {
-      // createIntent / mutateAsync errors surface via createIntent.error
+      // createIntent / mutateAsync / permit-sign errors surface via the inline
+      // error block + activity log.
       lifecycle.reset();
     }
   }
@@ -220,6 +262,10 @@ export function SwapForm({ isInFlight }: Props) {
   } else if (!isConnected) {
     ctaLabel = "Connect wallet";
     ctaDisabled = true;
+  } else if (permitSigning) {
+    ctaLabel = "Awaiting permit signature…";
+    ctaDisabled = true;
+    ctaShowSpinner = true;
   } else if (createIntent.isPending) {
     ctaLabel = "Creating intent…";
     ctaDisabled = true;
@@ -245,7 +291,7 @@ export function SwapForm({ isInFlight }: Props) {
   } else if (quote.isError) {
     ctaLabel = "Quote unavailable";
     ctaDisabled = true;
-  } else if (needsApprove) {
+  } else if (needsApprove && !usePermitFlow) {
     if (approve.isPending) {
       ctaLabel = "Approving…";
       ctaDisabled = true;
@@ -257,8 +303,13 @@ export function SwapForm({ isInFlight }: Props) {
     }
   }
 
-  const error = createIntent.error || deposit.error || approve.error;
-  const formDisabled = isInFlight || approve.isPending || !network.configured;
+  const error =
+    permitError || createIntent.error || deposit.error || approve.error;
+  const formDisabled =
+    isInFlight ||
+    approve.isPending ||
+    permitSigning ||
+    !network.configured;
 
   const stakesAffix =
     network.stakes === "real" ? (

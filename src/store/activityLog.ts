@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type LogLevel = "info" | "ok" | "warn" | "err";
-export type LogChannel = "API" | "TX" | "EVT" | "CHAIN" | "QUOTE" | "SES";
+export type LogChannel = "API" | "TX" | "EVT" | "CHAIN" | "QUOTE" | "SES" | "SIG";
 
 export interface LogEntry {
   id: number;

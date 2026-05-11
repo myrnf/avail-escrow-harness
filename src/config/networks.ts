@@ -9,6 +9,13 @@ export interface TokenAddresses {
   cbBTC: Address;
 }
 
+/** Per-network EIP-2612 support flag per token. Testnet's KalqiX-deployed
+ *  tokens don't implement permit; canonical Circle USDC + Coinbase cbBTC do. */
+export interface PermitSupport {
+  USDC: boolean;
+  cbBTC: boolean;
+}
+
 export interface NetworkConfig {
   key: NetworkKey;
   label: string;
@@ -24,6 +31,7 @@ export interface NetworkConfig {
   kalqixMarketTicker: string;
   availEscrowBaseUrl: string;
   tokens: TokenAddresses;
+  permitSupport: PermitSupport;
   /** false → harness shows "not configured" UX and disables swap. */
   configured: boolean;
 }
@@ -48,6 +56,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
       USDC: "0x94d655f6cc102d1e7e3f7a0e66fa604779ca8306",
       cbBTC: "0xe58c5488de4d67dfb186ef955d412ff4473451a8",
     },
+    permitSupport: { USDC: false, cbBTC: false },
     configured: true,
   },
 
@@ -68,6 +77,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
     },
+    permitSupport: { USDC: true, cbBTC: true },
     configured: true,
   },
 
@@ -91,6 +101,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
     },
+    permitSupport: { USDC: true, cbBTC: true },
     configured: false,
   },
 };
