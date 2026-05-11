@@ -1,5 +1,10 @@
 import type { Address, Hex } from "viem";
-import { encodeAbiParameters, parseSignature } from "viem";
+import {
+  encodeAbiParameters,
+  hashTypedData,
+  parseSignature,
+  recoverAddress,
+} from "viem";
 import { useAccount, usePublicClient, useSignTypedData } from "wagmi";
 import { useActiveNetwork } from "./useActiveNetwork";
 import { useActivityLog } from "../store/activityLog";
@@ -113,27 +118,42 @@ export function usePermit() {
       args: [owner],
     });
 
+    const permitTypes = {
+      Permit: [
+        { name: "owner", type: "address" },
+        { name: "spender", type: "address" },
+        { name: "value", type: "uint256" },
+        { name: "nonce", type: "uint256" },
+        { name: "deadline", type: "uint256" },
+      ],
+    } as const;
+    const permitMessage = { owner, spender, value, nonce, deadline };
+
     const t0 = performance.now();
     const signature = await signTypedDataAsync({
       domain,
-      types: {
-        Permit: [
-          { name: "owner", type: "address" },
-          { name: "spender", type: "address" },
-          { name: "value", type: "uint256" },
-          { name: "nonce", type: "uint256" },
-          { name: "deadline", type: "uint256" },
-        ],
-      },
+      types: permitTypes,
       primaryType: "Permit",
-      message: {
-        owner,
-        spender,
-        value,
-        nonce,
-        deadline,
-      },
+      message: permitMessage,
     });
+
+    // Local verification: rebuild the digest we just signed and recover the
+    // address. If recovery mismatches, our domain/types/message construction
+    // doesn't match what the token contract will recompute on-chain. The
+    // contract's try/catch swallows permit reverts, so this is our only way to
+    // surface a signing bug before submission.
+    const digest = hashTypedData({
+      domain,
+      types: permitTypes,
+      primaryType: "Permit",
+      message: permitMessage,
+    });
+    const recovered = await recoverAddress({ hash: digest, signature });
+    if (recovered.toLowerCase() !== owner.toLowerCase()) {
+      throw new Error(
+        `Permit signature recovery mismatch: signed digest recovers to ${recovered}, expected owner ${owner}. Domain/types may not match the token contract — check name="${domain.name}" version="${domain.version}" chainId=${domain.chainId}.`
+      );
+    }
 
     const parsed = parseSignature(signature);
     // Wallets may return v as 27/28 (legacy) or yParity as 0/1 (modern).

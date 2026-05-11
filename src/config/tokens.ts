@@ -37,8 +37,9 @@ export const TOKEN_META: Record<TokenSymbol, TokenMeta> = {
     decimals: 8,
     glyph: "₿",
     brand: "#f7931a",
-    // OpenZeppelin's ERC20Permit default.
-    permitDomainVersion: "1",
+    // Coinbase cbBTC on Base reports version "2" via .version() — same as USDC.
+    // Verified by reading the contract directly (does not expose eip712Domain).
+    permitDomainVersion: "2",
   },
 };
 
