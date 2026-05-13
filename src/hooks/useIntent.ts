@@ -9,7 +9,11 @@ import {
 import { useActivityLog } from "../store/activityLog";
 import { useActiveNetwork } from "./useActiveNetwork";
 
-const POLL_MS = 2500;
+// Intent status polling cadence while in-flight. 500ms keeps the
+// harness's per-phase timings tight enough to be useful as actual
+// latency measurements — combined polling jitter on fill + settled
+// transitions is bounded to ~1s instead of 5s.
+const POLL_MS = 500;
 
 export function useCreateIntent() {
   const log = useActivityLog((s) => s.push);
