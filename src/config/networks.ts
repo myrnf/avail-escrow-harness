@@ -47,7 +47,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     stakes: "fake",
     rpcUrl:
       import.meta.env.VITE_BASE_SEPOLIA_RPC || "https://sepolia.base.org",
-    escrowContract: "0xe87e175EE35Ff028338a0c8D0F28c06427840a07",
+    escrowContract: "0xDF06678Ca95fDBe30a719675779209B76370a1ee",
     explorerBaseUrl: "https://sepolia.basescan.org",
     kalqixBaseUrl: "https://testnet-api.kalqix.com/v1",
     kalqixMarketTicker: "BTC_USDC",
@@ -68,7 +68,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     stakes: "real",
     rpcUrl:
       import.meta.env.VITE_BASE_MAINNET_RPC || "https://mainnet.base.org",
-    escrowContract: "0xe87e175EE35Ff028338a0c8D0F28c06427840a07",
+    escrowContract: "0xDF06678Ca95fDBe30a719675779209B76370a1ee",
     explorerBaseUrl: "https://basescan.org",
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTicker: "cbBTC_USDC",
