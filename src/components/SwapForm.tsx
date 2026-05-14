@@ -216,6 +216,12 @@ export function SwapForm({ isInFlight }: Props) {
             value: q.amountIn,
             deadline: permitDeadline,
           });
+          lifecycle.recordStep({
+            key: "permit",
+            at: Date.now(),
+            label: "Permit signed (off-chain)",
+            ok: true,
+          });
         } catch (e) {
           const err = e instanceof Error ? e : new Error(String(e));
           setPermitError(err);

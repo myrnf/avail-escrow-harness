@@ -20,7 +20,10 @@ import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
 // panel can show the tx hash the moment MetaMask returns, but it's collapsed
 // into the "deposit confirmed" row in this timeline — duration on that row is
 // the full sign-and-mine wall time.
+// "permit" is only rendered when the swap actually collected one (canary/mainnet
+// + ERC20 paths); testnet swaps skip the row entirely.
 const STEP_ORDER: { key: StepKey; label: string }[] = [
+  { key: "permit", label: "Permit signed (off-chain)" },
   { key: "createIntent", label: "POST /intent" },
   { key: "deposited", label: "User deposited (IntentDeposited)" },
   { key: "fill", label: "KalqiX fill" },
@@ -264,7 +267,9 @@ export function IntentPanel() {
           ) : null}
 
           <div className="intent__timeline">
-            {STEP_ORDER.map(({ key, label }) => {
+            {STEP_ORDER.filter(
+              ({ key }) => key !== "permit" || stepsByKey.has("permit")
+            ).map(({ key, label }) => {
               const step = stepsByKey.get(key);
               const isLast =
                 step &&
