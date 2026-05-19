@@ -609,6 +609,63 @@ body::before {
 }
 .txlist__hint > div + div { margin-top: 2px; }
 
+/* ---------- EXECUTION VIEW (post-settlement Transactions panel) ---------- */
+.exec { display: flex; flex-direction: column; }
+.exec__row {
+  display: grid;
+  grid-template-columns: minmax(80px, auto) 1fr;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.exec__row--actual {
+  background: var(--paper-warm);
+}
+.exec__label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.exec__value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink);
+  text-align: right;
+  font-feature-settings: "tnum";
+}
+.exec__deltas {
+  display: flex;
+  justify-content: flex-end;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.exec__delta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  font-feature-settings: "tnum";
+}
+.exec__delta.is-better { color: var(--forest); }
+.exec__delta.is-worse  { color: var(--oxide); }
+.exec__txlink {
+  display: block;
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--cobalt);
+  text-decoration: none;
+  letter-spacing: 0.04em;
+  transition: background 120ms ease;
+}
+.exec__txlink:hover {
+  background: var(--paper-warm);
+  text-decoration: underline;
+}
+
 /* ---------- LOG ---------- */
 .log {
   font-family: var(--font-mono);
