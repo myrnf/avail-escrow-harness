@@ -241,6 +241,9 @@ export function SwapForm({ isInFlight }: Props) {
         token_out: outInfo.address,
         amount_in: q.amountIn.toString(),
         amount_out: q.amountOutMin.toString(),
+        // Optional telemetry: gross expected output, pre-slippage. Lets Avail
+        // see what we quoted vs what we'll accept as a slippage floor.
+        amount_out_quote: q.amountOut.toString(),
         client_intent_id: `harness-${Date.now()}`,
         permit,
       });

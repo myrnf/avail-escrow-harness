@@ -4,7 +4,7 @@ import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
 import { useActiveNetwork } from "../hooks/useActiveNetwork";
 import { txExplorerUrl } from "../config/networks";
 import { shortHash } from "../lib/format";
-import type { SettlementState } from "../lib/intent";
+import type { SettlementOutcome } from "../lib/intent";
 
 interface Row {
   label: string;
@@ -13,36 +13,37 @@ interface Row {
   hint?: string | string[];
 }
 
-function settlementRows(s: SettlementState): Row[] {
-  if (typeof s === "string") return [];
-  if ("Settled" in s) {
+function settlementRows(s: SettlementOutcome): Row[] {
+  if (s.status === "SETTLED") {
     const rows: Row[] = [];
-    if (s.Settled.approval_tx_hash) {
+    if (s.approval_tx_hash) {
       rows.push({
         label: "Solver approval",
-        hash: s.Settled.approval_tx_hash,
+        hash: s.approval_tx_hash,
         state: "ok",
         hint: "pre-settlement allowance",
       });
     }
-    // Settlement is one atomic on-chain action with two effects — surface
-    // both as a two-line hint under a single row.
-    rows.push({
-      label: "Settlement",
-      hash: s.Settled.settlement_tx_hash,
-      state: "ok",
-      hint: [
-        "output token delivered to user",
-        "escrowed input released to solver",
-      ],
-    });
+    if (s.tx_hash) {
+      // Settlement is one atomic on-chain action with two effects — surface
+      // both as a two-line hint under a single row.
+      rows.push({
+        label: "Settlement",
+        hash: s.tx_hash,
+        state: "ok",
+        hint: [
+          "output token delivered to user",
+          "escrowed input released to solver",
+        ],
+      });
+    }
     return rows;
   }
-  if ("Unlocked" in s) {
+  if (s.status === "UNLOCKED" && s.tx_hash) {
     return [
       {
         label: "Refund",
-        hash: s.Unlocked.tx_hash,
+        hash: s.tx_hash,
         state: "warn",
         hint: "input asset returned to user",
       },
@@ -77,7 +78,7 @@ export function TransactionsPanel() {
 
   // Settlement / Refund — once intent has terminal settlement state.
   if (data) {
-    rows.push(...settlementRows(data.settlement_state));
+    rows.push(...settlementRows(data.settlement));
   }
 
   const empty = rows.length === 0;

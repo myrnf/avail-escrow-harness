@@ -5,8 +5,8 @@ import {
   isOrderTerminal,
   isSettlementTerminal,
   terminalVerdict,
-  type OrderState,
-  type SettlementState,
+  type OrderOutcome,
+  type SettlementOutcome,
 } from "../lib/intent";
 import { shortHash } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
@@ -34,37 +34,56 @@ const STEP_ORDER: { key: StepKey; label: string }[] = [
 
 const RENDERED_KEYS = new Set<StepKey>(STEP_ORDER.map((s) => s.key));
 
-function describeOrderState(s: OrderState): string {
-  if (typeof s === "string") return s;
-  if ("Completed" in s) return `Completed: ${s.Completed}`;
-  if ("Rejected" in s) return `Rejected · ${s.Rejected}`;
-  if ("Failed" in s) return `Failed · ${s.Failed}`;
-  return "Unknown";
-}
-function describeSettlementState(s: SettlementState): string {
-  if (typeof s === "string") return s;
-  if ("Settled" in s)
-    return `Settled · ${shortHash(s.Settled.settlement_tx_hash)}`;
-  if ("Unlocked" in s) return `Unlocked · ${shortHash(s.Unlocked.tx_hash)}`;
-  if ("Rejected" in s) return `Rejected · ${s.Rejected}`;
-  if ("Failed" in s) return `Failed · ${s.Failed}`;
+function describeOrderOutcome(o: OrderOutcome): string {
+  if (o.status === "FAILED") {
+    return o.error_message ? `Failed · ${o.error_message}` : "Failed";
+  }
+  if (o.status === "SUCCESS") return "Success";
+  if (o.status === "PENDING") return "Pending";
   return "Unknown";
 }
 
-function pillState(
-  s: OrderState | SettlementState,
-  isOrderField: boolean
-): { cls: string; dot: "idle" | "live" | "warn" | "ok" | "err" } {
-  if (typeof s === "string") {
-    if (s === "Pending") return { cls: "is-pending", dot: "live" };
-    return { cls: "", dot: "idle" };
+function describeSettlementOutcome(s: SettlementOutcome): string {
+  if (s.status === "SETTLED") {
+    return s.tx_hash ? `Settled · ${shortHash(s.tx_hash)}` : "Settled";
   }
-  if (isOrderField && "Completed" in s && s.Completed === "Filled") {
-    return { cls: "is-ok", dot: "ok" };
+  if (s.status === "UNLOCKED") {
+    return s.tx_hash ? `Unlocked · ${shortHash(s.tx_hash)}` : "Unlocked";
   }
-  if (!isOrderField && "Settled" in s) return { cls: "is-ok", dot: "ok" };
-  if (!isOrderField && "Unlocked" in s) return { cls: "is-err", dot: "warn" };
-  if ("Rejected" in s || "Failed" in s) return { cls: "is-err", dot: "err" };
+  if (s.status === "FAILED_TO_SETTLE") {
+    return s.error_message
+      ? `Failed to settle · ${s.error_message}`
+      : "Failed to settle";
+  }
+  if (s.status === "FAILED_TO_UNLOCK") {
+    return s.error_message
+      ? `Failed to unlock · ${s.error_message}`
+      : "Failed to unlock";
+  }
+  if (s.status === "PENDING") return "Pending";
+  return "Unknown";
+}
+
+function orderPill(o: OrderOutcome): {
+  cls: string;
+  dot: "idle" | "live" | "warn" | "ok" | "err";
+} {
+  if (o.status === "PENDING") return { cls: "is-pending", dot: "live" };
+  if (o.status === "SUCCESS") return { cls: "is-ok", dot: "ok" };
+  if (o.status === "FAILED") return { cls: "is-err", dot: "err" };
+  return { cls: "", dot: "idle" };
+}
+
+function settlementPill(s: SettlementOutcome): {
+  cls: string;
+  dot: "idle" | "live" | "warn" | "ok" | "err";
+} {
+  if (s.status === "PENDING") return { cls: "is-pending", dot: "live" };
+  if (s.status === "SETTLED") return { cls: "is-ok", dot: "ok" };
+  if (s.status === "UNLOCKED") return { cls: "is-err", dot: "warn" };
+  if (s.status === "FAILED_TO_SETTLE" || s.status === "FAILED_TO_UNLOCK") {
+    return { cls: "is-err", dot: "err" };
+  }
   return { cls: "", dot: "idle" };
 }
 
@@ -88,25 +107,16 @@ export function IntentPanel() {
     return () => clearInterval(id);
   }, [lifecycle.endedAt, lifecycle.steps.length]);
 
-  // ---------- LIFECYCLE: detect order_state terminal ----------
-  const orderTerminal = data ? isOrderTerminal(data.order_state) : false;
+  // ---------- LIFECYCLE: detect order terminal ----------
+  const orderTerminal = data ? isOrderTerminal(data.order) : false;
   useEffect(() => {
     if (!data || !orderTerminal) return;
-    const o = data.order_state;
-    let detail = "";
-    let ok = true;
-    if (typeof o === "object") {
-      if ("Completed" in o) {
-        detail = o.Completed;
-        ok = o.Completed === "Filled";
-      } else if ("Rejected" in o) {
-        detail = o.Rejected;
-        ok = false;
-      } else if ("Failed" in o) {
-        detail = o.Failed;
-        ok = false;
-      }
-    }
+    const o = data.order;
+    const ok = o.status === "SUCCESS";
+    const detail =
+      o.status === "FAILED"
+        ? o.error_message ?? "FAILED"
+        : o.amount_out_symbol ?? "";
     lifecycle.recordStep({
       key: "fill",
       at: Date.now(),
@@ -116,32 +126,32 @@ export function IntentPanel() {
     });
   }, [orderTerminal]);
 
-  // ---------- LIFECYCLE: detect settlement_state terminal ----------
+  // ---------- LIFECYCLE: detect settlement terminal ----------
   const settlementTerminal = data
-    ? isSettlementTerminal(data.settlement_state)
+    ? isSettlementTerminal(data.settlement)
     : false;
   useEffect(() => {
     if (!data || !settlementTerminal) return;
-    const s = data.settlement_state;
+    const s = data.settlement;
     let label = "Settlement";
     let detail = "";
     let ok = true;
     let tx: string | undefined;
-    if (typeof s === "object") {
-      if ("Settled" in s) {
-        label = "User filled (IntentSettled)";
-        tx = s.Settled.settlement_tx_hash;
-      } else if ("Unlocked" in s) {
-        label = "User refunded (IntentUnlocked)";
-        tx = s.Unlocked.tx_hash;
-        ok = false;
-      } else if ("Rejected" in s) {
-        detail = s.Rejected;
-        ok = false;
-      } else if ("Failed" in s) {
-        detail = s.Failed;
-        ok = false;
-      }
+    if (s.status === "SETTLED") {
+      label = "User filled (IntentSettled)";
+      tx = s.tx_hash ?? undefined;
+    } else if (s.status === "UNLOCKED") {
+      label = "User refunded (IntentUnlocked)";
+      tx = s.tx_hash ?? undefined;
+      ok = false;
+    } else if (s.status === "FAILED_TO_SETTLE") {
+      label = "Settlement failed";
+      detail = s.error_message ?? "FAILED_TO_SETTLE";
+      ok = false;
+    } else if (s.status === "FAILED_TO_UNLOCK") {
+      label = "Unlock failed";
+      detail = s.error_message ?? "FAILED_TO_UNLOCK";
+      ok = false;
     }
     lifecycle.recordStep({
       key: "settled",
@@ -167,7 +177,7 @@ export function IntentPanel() {
         level: "warn",
         channel: "EVT",
         message: `IntentUnlocked · ${data.intent_id}`,
-        details: shortHash(verdict.tx),
+        details: verdict.tx ? shortHash(verdict.tx) : "no tx hash",
       });
     } else if (verdict) {
       log({
@@ -248,19 +258,19 @@ export function IntentPanel() {
 
           {data ? (
             <div className="intent-states">
-              <div className={`state-pill ${pillState(data.order_state, true).cls}`}>
+              <div className={`state-pill ${orderPill(data.order).cls}`}>
                 <span className="label">Order state</span>
                 <span className="value">
-                  <Dot state={pillState(data.order_state, true).dot} />
-                  {describeOrderState(data.order_state)}
+                  <Dot state={orderPill(data.order).dot} />
+                  {describeOrderOutcome(data.order)}
                 </span>
               </div>
               <div className="intent-states__sep">→</div>
-              <div className={`state-pill ${pillState(data.settlement_state, false).cls}`}>
+              <div className={`state-pill ${settlementPill(data.settlement).cls}`}>
                 <span className="label">Settlement state</span>
                 <span className="value">
-                  <Dot state={pillState(data.settlement_state, false).dot} />
-                  {describeSettlementState(data.settlement_state)}
+                  <Dot state={settlementPill(data.settlement).dot} />
+                  {describeSettlementOutcome(data.settlement)}
                 </span>
               </div>
             </div>

@@ -50,7 +50,7 @@ export function useIntentStatus(id: string | null) {
     refetchInterval: (q) => {
       const d = q.state.data;
       if (!d) return POLL_MS;
-      if (isOrderTerminal(d.order_state) && isSettlementTerminal(d.settlement_state)) {
+      if (isOrderTerminal(d.order) && isSettlementTerminal(d.settlement)) {
         return false;
       }
       return POLL_MS;

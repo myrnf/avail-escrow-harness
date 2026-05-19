@@ -1,10 +1,17 @@
 import type { Address, Hex } from "viem";
 
+// ─────────────────────────────────────────────────────────────────────────
+// POST /intent
+// ─────────────────────────────────────────────────────────────────────────
+
 export interface CreateIntentRequest {
   token_in: Address;
   token_out: Address;
   amount_in: string;
+  /** The slippage-floored minimum acceptable output (enforced on-chain). */
   amount_out: string;
+  /** Optional: the gross expected output before slippage. Free telemetry for Avail. */
+  amount_out_quote?: string | null;
   client_intent_id?: string | null;
   permit?: string | null;
 }
@@ -17,8 +24,7 @@ export interface CreateIntentSuccess {
 }
 
 export type IntentErrorKind =
-  | "INITIAL_VALIDATION"
-  | "VALIDATION"
+  | "INVALID_REQUEST"
   | "INTERNAL_ERROR"
   | string;
 
@@ -33,90 +39,108 @@ export interface CreateIntentEnvelope {
   error: IntentApiError | null;
 }
 
-/* ---------- GET /intent/{id} ---------- */
+// ─────────────────────────────────────────────────────────────────────────
+// GET /intent/{id}
+// ─────────────────────────────────────────────────────────────────────────
 
-export type OrderState =
-  | "None"
-  | "Pending"
-  | { Completed: "Filled" | "Expired" | "Cancelled" | "PartiallyFilled" | string }
-  | { Rejected: string }
-  | { Failed: string };
+export type OrderStatus = "UNKNOWN" | "PENDING" | "SUCCESS" | "FAILED";
 
-export type SettlementState =
-  | "None"
-  | "Pending"
-  | {
-      Settled: {
-        settlement_tx_hash: Hex;
-        approval_tx_hash: Hex | null;
-      };
-    }
-  | { Unlocked: { tx_hash: Hex } }
-  | { Rejected: string }
-  | { Failed: string };
+export type SettlementStatus =
+  | "UNKNOWN"
+  | "PENDING"
+  | "SETTLED"
+  | "UNLOCKED"
+  | "FAILED_TO_UNLOCK"
+  | "FAILED_TO_SETTLE";
 
-export interface IntentDetail {
-  intent_id: string;
+export interface IntentInput {
   client_intent_id: string | null;
   token_in: Address;
   token_out: Address;
   amount_in: string;
   amount_out: string;
+  amount_out_quote: string | null;
   permit: string | null;
-  order_state: OrderState;
-  settlement_state: SettlementState;
 }
 
-/* ---------- helpers ---------- */
-
-export function isOrderTerminal(s: OrderState): boolean {
-  if (typeof s === "string") return false;
-  return "Completed" in s || "Rejected" in s || "Failed" in s;
+export interface OrderOutcome {
+  status: OrderStatus;
+  error_code: number | null;
+  error_message: string | null;
+  amount_out: string | null;
+  amount_out_formatted: string | null;
+  amount_out_id: number;
+  amount_out_decimals: number | null;
+  amount_out_symbol: string | null;
 }
 
-export function isSettlementTerminal(s: SettlementState): boolean {
-  if (typeof s === "string") return false;
-  return "Settled" in s || "Unlocked" in s || "Rejected" in s || "Failed" in s;
+export interface SettlementOutcome {
+  status: SettlementStatus;
+  error_code: number | null;
+  error_message: string | null;
+  amount_out: string | null;
+  tx_hash: Hex | null;
+  approval_tx_hash: Hex | null;
+}
+
+export interface IntentDetail {
+  intent_id: string;
+  input: IntentInput;
+  order: OrderOutcome;
+  settlement: SettlementOutcome;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Terminal-state helpers
+// ─────────────────────────────────────────────────────────────────────────
+
+export function isOrderTerminal(o: OrderOutcome): boolean {
+  return o.status === "SUCCESS" || o.status === "FAILED";
+}
+
+export function isSettlementTerminal(s: SettlementOutcome): boolean {
+  return (
+    s.status === "SETTLED" ||
+    s.status === "UNLOCKED" ||
+    s.status === "FAILED_TO_UNLOCK" ||
+    s.status === "FAILED_TO_SETTLE"
+  );
 }
 
 export type IntentTerminal =
   | { kind: "settled"; settlementTx: Hex; approvalTx: Hex | null }
-  | { kind: "unlocked"; tx: Hex }
-  | { kind: "rejected"; where: "order" | "settlement"; reason: string }
+  | { kind: "unlocked"; tx: Hex | null }
   | { kind: "failed"; where: "order" | "settlement"; reason: string }
   | null;
 
-/** Returns a single normalized terminal verdict, or null if still in flight. */
+/** Returns a single normalized terminal verdict, or null if still in flight.
+ *  Settlement-side terminal states take precedence over order-side. */
 export function terminalVerdict(d: IntentDetail): IntentTerminal {
-  const o = d.order_state;
-  const s = d.settlement_state;
-
-  if (typeof s === "object") {
-    if ("Settled" in s) {
-      return {
-        kind: "settled",
-        settlementTx: s.Settled.settlement_tx_hash,
-        approvalTx: s.Settled.approval_tx_hash,
-      };
-    }
-    if ("Unlocked" in s) {
-      return { kind: "unlocked", tx: s.Unlocked.tx_hash };
-    }
-    if ("Rejected" in s) {
-      return { kind: "rejected", where: "settlement", reason: s.Rejected };
-    }
-    if ("Failed" in s) {
-      return { kind: "failed", where: "settlement", reason: s.Failed };
-    }
+  const s = d.settlement;
+  if (s.status === "SETTLED") {
+    return {
+      kind: "settled",
+      settlementTx: s.tx_hash ?? ("0x" as Hex),
+      approvalTx: s.approval_tx_hash,
+    };
+  }
+  if (s.status === "UNLOCKED") {
+    return { kind: "unlocked", tx: s.tx_hash };
+  }
+  if (s.status === "FAILED_TO_SETTLE" || s.status === "FAILED_TO_UNLOCK") {
+    return {
+      kind: "failed",
+      where: "settlement",
+      reason: s.error_message ?? s.status,
+    };
   }
 
-  if (typeof o === "object") {
-    if ("Rejected" in o) {
-      return { kind: "rejected", where: "order", reason: o.Rejected };
-    }
-    if ("Failed" in o) {
-      return { kind: "failed", where: "order", reason: o.Failed };
-    }
+  if (d.order.status === "FAILED") {
+    return {
+      kind: "failed",
+      where: "order",
+      reason: d.order.error_message ?? "FAILED",
+    };
   }
 
   return null;
