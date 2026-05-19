@@ -86,9 +86,11 @@ function fmtSignedPct(actual: bigint, baseline: bigint): string {
 function ExecutionView({
   data,
   network,
+  depositTxHash,
 }: {
   data: IntentDetail;
   network: NetworkConfig;
+  depositTxHash: string | null;
 }) {
   const inputTok = tokenInfoByAddress(network, data.input.token_in);
   const outputTok = tokenInfoByAddress(network, data.input.token_out);
@@ -181,15 +183,29 @@ function ExecutionView({
           ) : null}
         </div>
       ) : null}
-      {data.settlement.tx_hash ? (
-        <a
-          className="exec__txlink"
-          href={txExplorerUrl(network, data.settlement.tx_hash)}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          ↗ settlement · {shortHash(data.settlement.tx_hash)}
-        </a>
+      {(depositTxHash || data.settlement.tx_hash) ? (
+        <div className="exec__txlinks">
+          {depositTxHash ? (
+            <a
+              className="exec__txlink"
+              href={txExplorerUrl(network, depositTxHash)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              ↗ deposit · {shortHash(depositTxHash)}
+            </a>
+          ) : null}
+          {data.settlement.tx_hash ? (
+            <a
+              className="exec__txlink"
+              href={txExplorerUrl(network, data.settlement.tx_hash)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              ↗ settlement · {shortHash(data.settlement.tx_hash)}
+            </a>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
@@ -201,6 +217,13 @@ export function TransactionsPanel() {
   const network = useActiveNetwork();
   const data = status.data;
 
+  // Deposit tx hash lives in the lifecycle store — recorded by SwapForm as
+  // soon as the deposit broadcasts. Used by both views.
+  const depositTxHash =
+    lifecycle.steps.find(
+      (s) => s.key === "deposit" || s.key === "deposited"
+    )?.tx ?? null;
+
   // Repurpose the panel to a price-execution view once the swap has settled
   // cleanly. Refund and failure terminal states keep the original tx-row view.
   if (data && data.settlement.status === "SETTLED") {
@@ -209,7 +232,11 @@ export function TransactionsPanel() {
         title="Execution"
         status={<PanelStatus state="ok">Settled</PanelStatus>}
       >
-        <ExecutionView data={data} network={network} />
+        <ExecutionView
+          data={data}
+          network={network}
+          depositTxHash={depositTxHash}
+        />
       </Panel>
     );
   }
@@ -217,14 +244,11 @@ export function TransactionsPanel() {
   const rows: Row[] = [];
 
   // Deposit (user) — known as soon as deposit broadcasts.
-  const depositStep = lifecycle.steps.find(
-    (s) => s.key === "deposit" || s.key === "deposited"
-  );
-  if (depositStep?.tx) {
+  if (depositTxHash) {
     const confirmed = lifecycle.steps.some((s) => s.key === "deposited");
     rows.push({
       label: "Deposit",
-      hash: depositStep.tx,
+      hash: depositTxHash,
       state: confirmed ? "ok" : "live",
       hint: confirmed ? "input locked in escrow" : "broadcasting…",
     });
