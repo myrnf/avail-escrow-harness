@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/test-solver/:path*", "destination": "/index.html" },
+    { "source": "/test-solver", "destination": "/index.html" }
+  ]
+}

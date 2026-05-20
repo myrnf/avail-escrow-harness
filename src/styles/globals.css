@@ -738,6 +738,27 @@ body::before {
   .main { padding: 20px; }
 }
 
+/* ---------- TEST-SOLVER BANNER ---------- */
+.test-solver__banner {
+  background: var(--oxide-soft);
+  color: var(--oxide);
+  padding: 10px 16px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border: 1px solid var(--hairline);
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+/* ---------- HEADER LINK (test-solver back-link) ---------- */
+.brand__link {
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+.brand__link:hover { color: var(--ink); }
+
 /* ---------- NETWORK TOGGLE ---------- */
 .net-toggle {
   display: inline-flex;
