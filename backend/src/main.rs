@@ -17,7 +17,7 @@ use axum::http::{HeaderName, HeaderValue, Method};
 use axum::Router;
 use dashmap::DashMap;
 use std::sync::Arc;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
 }
 
 fn build_cors(origins: &[String]) -> CorsLayer {
-    let mut layer = CorsLayer::new()
+    let layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([
             HeaderName::from_static("content-type"),
@@ -73,13 +73,16 @@ fn build_cors(origins: &[String]) -> CorsLayer {
         ]);
 
     if origins.is_empty() {
-        // No origins set → allow nothing (dev should set ALLOWED_ORIGINS).
+        // No origins set → no Access-Control-Allow-Origin emitted. Dev should
+        // set ALLOWED_ORIGINS.
         return layer;
     }
-    for o in origins {
-        if let Ok(v) = HeaderValue::from_str(o) {
-            layer = layer.allow_origin(v);
-        }
-    }
-    layer
+
+    // tower-http's .allow_origin() *replaces* the value each call rather than
+    // accumulating. Use AllowOrigin::list() to pass the full set.
+    let values: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
+    layer.allow_origin(AllowOrigin::list(values))
 }

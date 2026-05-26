@@ -42,7 +42,7 @@ impl Config {
             kalqix_base_url: optional("KALQIX_BASE_URL", "https://api.kalqix.com/v1"),
             kalqix_market: optional("KALQIX_MARKET", "cbBTC/USDC"),
 
-            solver_private_key: require("SOLVER_PRIVATE_KEY")?,
+            solver_private_key: normalize_priv_key(&require("SOLVER_PRIVATE_KEY")?),
             base_rpc_url: optional("BASE_RPC_URL", "https://mainnet.base.org"),
 
             allowed_origins: optional("ALLOWED_ORIGINS", "")
@@ -92,4 +92,10 @@ fn parse_u128(key: &str, default: &str) -> Result<u128> {
 fn parse_addr(key: &str, default: &str) -> Result<Address> {
     let s = optional(key, default);
     Address::from_str(&s).with_context(|| format!("env var {} = {:?} must parse as address", key, s))
+}
+
+/// Strip optional 0x prefix + whitespace from the private key. alloy's signer
+/// expects 64 hex chars; users frequently paste with the standard prefix.
+fn normalize_priv_key(raw: &str) -> String {
+    raw.trim().trim_start_matches("0x").trim_start_matches("0X").to_string()
 }

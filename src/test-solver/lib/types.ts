@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem";
 
-export type Algo = "clear_min" | "maximize_fill";
+export type Algo = "clear_min" | "maximize_fill" | "max_fill_limit";
 export type Side = "BUY" | "SELL";
 
 /** Mirrors backend SwapStatus in src/state.rs. */

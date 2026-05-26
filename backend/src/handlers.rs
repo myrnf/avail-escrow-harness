@@ -377,14 +377,25 @@ async fn execute_swap(state: AppState, id: Uuid) {
     }
 
     // --- Compute payout to user ---
-    // On BUY: user receives base (cbBTC). Payout = filled_base − fee_in_base.
-    //   (KalqiX fees on cbBTC/USDC are deducted in the receive asset; for BUY
-    //   that's the base. The trades' `fee` field is already in that asset.)
-    // On SELL: user receives quote (USDC). Payout = filled_quote − fee_in_quote.
+    // KalqiX charges fees in the QUOTE asset (USDC), not in the receive
+    // asset. Empirically: on a 12 USDC → cbBTC BUY, trade.fee was ~8400
+    // base units = 0.0084 USDC ≈ 0.07% of 12 USDC. So:
+    //   BUY: solver received the full quantity in base (cbBTC). Deliver
+    //        filled_base to user; the fee was extra USDC the solver paid.
+    //   SELL: solver received quote minus fee. Deliver filled_quote − fee.
     let payout = match side {
-        Side::Buy => filled_base.saturating_sub(fee_total),
+        Side::Buy => filled_base,
         Side::Sell => filled_quote.saturating_sub(fee_total),
     };
+    info!(
+        swap_id = %id,
+        side = ?side,
+        filled_base = %filled_base,
+        filled_quote = %filled_quote,
+        fee_total = %fee_total,
+        payout = %payout,
+        "trade summary"
+    );
 
     if payout < amount_out_min {
         // Defensive: shouldn't normally happen for FOK Algo A (we sized to

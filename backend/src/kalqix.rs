@@ -258,17 +258,20 @@ fn hmac_hex(secret: &str, msg: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// The per-order body that the EIP-191 signature covers. KalqiX's
-/// ethereum-signature guide describes this as a canonicalized payload with
-/// `action: "PLACE_ORDER"`. Exact format needs one-time live verification —
-/// we follow the most idiomatic interpretation: sort-canonical JSON of the
-/// order body fields + action + timestamp, then personal-sign that string.
+/// Build the canonical string that the per-order EIP-191 signature covers.
+///
+/// Per KalqiX's ethereum-signature guide, the signing payload is **flat** —
+/// the order body's own fields plus `action: "PLACE_ORDER"` plus `timestamp`,
+/// then canonicalized as JSON with sorted keys. The HTTP request body has
+/// the same shape minus `action`, plus the resulting `signature`.
+///
+/// Example from the docs (LIMIT BUY):
+///   `{"action":"PLACE_ORDER","expires_at":0,"order_type":"LIMIT","price":"100000000000","quantity":"10000000","side":"BUY","ticker":"BTC_USDC","time_in_force":0,"timestamp":1767225600000}`
 fn build_signing_payload(body: &Value, timestamp_ms: u64) -> String {
-    let mut wrapped = serde_json::Map::new();
-    wrapped.insert("action".to_string(), json!("PLACE_ORDER"));
-    wrapped.insert("body".to_string(), body.clone());
-    wrapped.insert("timestamp".to_string(), json!(timestamp_ms));
-    canonicalize_json(&Value::Object(wrapped))
+    let mut flat = body.as_object().cloned().unwrap_or_default();
+    flat.insert("action".to_string(), json!("PLACE_ORDER"));
+    flat.insert("timestamp".to_string(), json!(timestamp_ms));
+    canonicalize_json(&Value::Object(flat))
 }
 
 fn percent_encode(s: &str) -> String {
@@ -423,6 +426,11 @@ pub struct KalqiXMarket {
     pub min_trade_size: String,
     pub taker_fee: String,
     pub status: String,
+    /// Percent (integer) by which an order price may deviate from market
+    /// price; orders outside the band are rejected. Used as the cap when
+    /// pricing limit orders.
+    #[serde(default)]
+    pub max_price_deviation_percent: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

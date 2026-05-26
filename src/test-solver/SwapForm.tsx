@@ -18,7 +18,8 @@ import type { Algo } from "./lib/types";
 const NETWORK = NETWORKS.canary; // test-solver is implicitly Base mainnet
 const ALGO_OPTIONS: { key: Algo; label: string; hint: string }[] = [
   { key: "clear_min", label: "A · clear min", hint: "current avail behavior" },
-  { key: "maximize_fill", label: "B · maximize fill", hint: "proposed change" },
+  { key: "maximize_fill", label: "B · market FOK", hint: "kalqix walks the book" },
+  { key: "max_fill_limit", label: "C · limit FOK", hint: "harness walks the book" },
 ];
 
 export function SwapForm() {

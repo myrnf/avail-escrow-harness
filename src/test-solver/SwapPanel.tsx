@@ -56,7 +56,9 @@ function fmtSignedPct(actual: bigint, baseline: bigint): string | null {
 }
 
 function algoLabel(a: Algo): string {
-  return a === "clear_min" ? "A · clear min" : "B · maximize fill";
+  if (a === "clear_min") return "A · clear min";
+  if (a === "maximize_fill") return "B · market FOK";
+  return "C · limit FOK";
 }
 
 export function SwapPanel({ swap }: { swap: Swap | null }) {
@@ -85,12 +87,18 @@ export function SwapPanel({ swap }: { swap: Swap | null }) {
     ? BigInt(swap.amount_out_quote)
     : null;
   const amountActual = swap.fill.net_payout ? BigInt(swap.fill.net_payout) : null;
-  // For BUY: how much of amount_in did the solver actually spend on KalqiX?
-  // filled_quantity_quote is the answer. For SELL: filled_quantity_base.
+  // "Input consumed" = the solver's total expenditure to acquire the output.
+  // For BUY: filled_quote + taker_fee_paid (both denominated in USDC). Any
+  // remainder of amount_in stayed as solver margin (the gap Algo C closes).
+  // For SELL: the solver delivered amount_in cbBTC to KalqiX; fee is taken
+  // from the USDC received side so the input asset itself is fully consumed.
+  const fillFee = swap.fill.taker_fee_paid
+    ? BigInt(swap.fill.taker_fee_paid)
+    : 0n;
   const filledInputUsed =
     swap.side === "BUY"
       ? swap.fill.filled_quantity_quote
-        ? BigInt(swap.fill.filled_quantity_quote)
+        ? BigInt(swap.fill.filled_quantity_quote) + fillFee
         : null
       : swap.fill.filled_quantity_base
         ? BigInt(swap.fill.filled_quantity_base)
