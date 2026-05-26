@@ -13,9 +13,45 @@ export interface CreateIntentRequest {
   /** Optional: the gross expected output before slippage. Free telemetry for Avail. */
   amount_out_quote?: string | null;
   client_intent_id?: string | null;
+  /** EIP-2612 permit blob, hex-encoded. Spec limit 2000 chars. */
   permit?: string | null;
 }
 
+/** Avail Escrow `/intent` error codes (OpenAPI enum). String widened with
+ *  `& {}` so unknown codes from older / newer deployments still type-check. */
+export type IntentErrorCode =
+  | "BAD_TOKEN_IN"
+  | "BAD_TOKEN_OUT"
+  | "BAD_AMOUNT_IN"
+  | "BAD_AMOUNT_OUT"
+  | "BAD_AMOUNT_OUT_QUOTE"
+  | "BAD_PERMIT"
+  | "BAD_CLIENT_INTENT_ID"
+  | "NO_ASSET_FOUND_FOR_TOKEN_IN"
+  | "NO_ASSET_FOUND_FOR_TOKEN_OUT"
+  | "ASSETS_ARE_THE_SAME"
+  | "NO_MARKET_FOUND"
+  | "MIN_QTY_VIOLATION"
+  | "TICK_SIZE_VIOLATION"
+  | "INTERNAL_ERROR"
+  | "TOKEN_IN_NOT_SUPPORTED"
+  | "TOKEN_OUT_NOT_SUPPORTED"
+  | "AMOUNT_IN_BELOW_MIN_AMOUNT"
+  | "AMOUNT_IN_ABOVE_MAX_AMOUNT"
+  | (string & {});
+
+/** Canonical (post-spec-v0.1.0) flat response shape. Same schema is returned
+ *  on success and on error — discriminated by whether `error_code` is null. */
+export interface CreateIntentResponse {
+  id: string | null;
+  encoded_calldata: Hex | null;
+  contract_address: Address | null;
+  solver_address: Address | null;
+  error_code: IntentErrorCode | null;
+  error_message: string | null;
+}
+
+/** Narrowed success-only view exposed to callers. */
 export interface CreateIntentSuccess {
   id: string;
   encoded_calldata: Hex;
@@ -23,17 +59,12 @@ export interface CreateIntentSuccess {
   solver_address: Address;
 }
 
-export type IntentErrorKind =
-  | "INVALID_REQUEST"
-  | "INTERNAL_ERROR"
-  | string;
-
+// ── Legacy wrapped envelope (canary on the older deployment may still emit this).
+// Kept for backward compatibility; the client transparently accepts either shape.
 export interface IntentApiError {
-  kind: IntentErrorKind;
+  kind: string;
   message: string;
 }
-
-/** Wire envelope: exactly one of success/error is non-null. */
 export interface CreateIntentEnvelope {
   success: CreateIntentSuccess | null;
   error: IntentApiError | null;
