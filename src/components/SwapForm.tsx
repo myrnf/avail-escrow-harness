@@ -2,14 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useAccount } from "wagmi";
 import { Panel, PanelStatus } from "./primitives/Panel";
 import { TokenPill } from "./primitives/TokenPill";
+import { TokenSelect } from "./primitives/TokenSelect";
 import { Chip } from "./primitives/Chip";
-import { getToken, type TokenSymbol } from "../config/tokens";
+import { getToken, TOKEN_LIST_META, type TokenSymbol } from "../config/tokens";
 import {
   DEFAULT_SLIPPAGE_BPS,
   SLIPPAGE_PRESETS_BPS,
 } from "../config/avail";
 import { useQuote } from "../hooks/useQuote";
-import { useTokenBalance, useTokenAllowance, useApprove } from "../hooks/useErc20";
+import { useInputBalance, useTokenAllowance, useApprove } from "../hooks/useErc20";
 import { useCreateIntent } from "../hooks/useIntent";
 import { useDeposit } from "../hooks/useDeposit";
 import { useActiveNetwork } from "../hooks/useActiveNetwork";
@@ -25,8 +26,14 @@ interface Props {
 export function SwapForm({ isInFlight }: Props) {
   const { address, isConnected } = useAccount();
   const network = useActiveNetwork();
-  const [tokenIn, setTokenIn] = useState<TokenSymbol>("USDC");
-  const [tokenOut, setTokenOut] = useState<TokenSymbol>("cbBTC");
+  // USDC is always the hub leg; the user picks the other (base) asset and which
+  // side USDC sits on. This guarantees only USDC-quoted pairs (the only markets
+  // KalqiX/Avail support) — no invalid cbBTC↔ETH combinations.
+  const [pairedToken, setPairedToken] =
+    useState<Exclude<TokenSymbol, "USDC">>("cbBTC");
+  const [usdcSide, setUsdcSide] = useState<"in" | "out">("in");
+  const tokenIn: TokenSymbol = usdcSide === "in" ? "USDC" : pairedToken;
+  const tokenOut: TokenSymbol = usdcSide === "in" ? pairedToken : "USDC";
   const [amountInStr, setAmountInStr] = useState("");
   const [slippageBps, setSlippageBps] = useState<number>(DEFAULT_SLIPPAGE_BPS);
   const log = useActivityLog((s) => s.push);
@@ -34,6 +41,11 @@ export function SwapForm({ isInFlight }: Props) {
 
   const inInfo = getToken(network, tokenIn);
   const outInfo = getToken(network, tokenOut);
+
+  // Non-USDC leg options for the token selector (cbBTC, ETH).
+  const pairedOptions = TOKEN_LIST_META.filter((t) => t.symbol !== "USDC").map(
+    (t) => getToken(network, t.symbol)
+  );
 
   const amountIn = useMemo(() => {
     try {
@@ -43,11 +55,15 @@ export function SwapForm({ isInFlight }: Props) {
     }
   }, [amountInStr, inInfo.decimals]);
 
-  const balance = useTokenBalance(inInfo.address, address);
+  const balance = useInputBalance(inInfo, address);
+  // Native ETH is paid via msg.value — no ERC-20 allowance exists, so skip the
+  // allowance read entirely (balanceOf/allowance on the 0xEeee… sentinel would
+  // just revert).
   const allowance = useTokenAllowance(
     inInfo.address,
     address,
-    network.escrowContract
+    network.escrowContract,
+    !inInfo.isNative
   );
   const quote = useQuote({
     tokenIn,
@@ -161,27 +177,49 @@ export function SwapForm({ isInFlight }: Props) {
 
   function flip() {
     if (isInFlight) return;
-    setTokenIn(tokenOut);
-    setTokenOut(tokenIn);
+    setUsdcSide((s) => (s === "in" ? "out" : "in"));
     setAmountInStr("");
     createIntent.reset();
     deposit.reset();
   }
 
-  function setMax() {
-    if (typeof balance.data === "bigint") {
-      setAmountInStr(
-        fmtAmount(balance.data as bigint, inInfo.decimals, {
-          minDp: 0,
-          maxDp: inInfo.decimals,
-        }).replace(/,/g, "")
-      );
-    }
+  function selectPaired(symbol: TokenSymbol) {
+    if (isInFlight || symbol === "USDC") return;
+    setPairedToken(symbol as Exclude<TokenSymbol, "USDC">);
+    setAmountInStr("");
+    createIntent.reset();
+    deposit.reset();
   }
 
+  // Native ETH pays its own gas, so MAX can't be the full balance or the deposit
+  // tx (msg.value == amountIn) leaves nothing for gas and the wallet rejects it.
+  // Reserve a small headroom (Base L2 gas is sub-cent; 0.0001 ETH is ample).
+  // ERC-20s pay gas separately, so MAX = full balance.
+  const NATIVE_GAS_RESERVE = 100_000_000_000_000n; // 0.0001 ETH
+
+  function setMax() {
+    if (typeof balance.data !== "bigint") return;
+    const bal = balance.data as bigint;
+    const usable = inInfo.isNative
+      ? bal > NATIVE_GAS_RESERVE
+        ? bal - NATIVE_GAS_RESERVE
+        : 0n
+      : bal;
+    setAmountInStr(
+      fmtAmount(usable, inInfo.decimals, {
+        minDp: 0,
+        maxDp: inInfo.decimals,
+      }).replace(/,/g, "")
+    );
+  }
+
+  // Native ETH never needs an approval (paid via msg.value). For ERC-20s,
+  // compare the escrow allowance against the input amount.
   const needsApprove =
-    typeof allowance.data === "bigint" && amountIn > 0n
-      ? allowance.data < amountIn
+    !inInfo.isNative &&
+    typeof allowance.data === "bigint" &&
+    amountIn > 0n
+      ? (allowance.data as bigint) < amountIn
       : false;
 
   // When the token supports EIP-2612 and allowance is insufficient, the permit
@@ -247,10 +285,13 @@ export function SwapForm({ isInFlight }: Props) {
         client_intent_id: `harness-${Date.now()}`,
         permit,
       });
+      // Native ETH is paid as msg.value; AvailEscrow.deposit() requires
+      // msg.value == amountIn exactly (reverts InvalidMsgValue otherwise) and
+      // forbids a permit. ERC-20s send 0 value and rely on permit/allowance.
       deposit.deposit({
         to: intent.contract_address,
         data: intent.encoded_calldata,
-        value: 0n,
+        value: inInfo.isNative ? q.amountIn : 0n,
       });
     } catch {
       // createIntent / mutateAsync / permit-sign errors surface via the inline
@@ -366,7 +407,16 @@ export function SwapForm({ isInFlight }: Props) {
             ) : null}
           </div>
         </div>
-        <TokenPill token={inInfo} />
+        {inInfo.symbol === "USDC" ? (
+          <TokenPill token={inInfo} />
+        ) : (
+          <TokenSelect
+            value={inInfo}
+            options={pairedOptions}
+            onSelect={selectPaired}
+            disabled={formDisabled}
+          />
+        )}
       </div>
 
       <div className="swap__divider">
@@ -400,7 +450,16 @@ export function SwapForm({ isInFlight }: Props) {
             Balance — <span style={{ marginLeft: 4 }}>{tokenOut}</span>
           </div>
         </div>
-        <TokenPill token={outInfo} />
+        {outInfo.symbol === "USDC" ? (
+          <TokenPill token={outInfo} />
+        ) : (
+          <TokenSelect
+            value={outInfo}
+            options={pairedOptions}
+            onSelect={selectPaired}
+            disabled={formDisabled}
+          />
+        )}
       </div>
 
       {/* Details */}
@@ -409,7 +468,7 @@ export function SwapForm({ isInFlight }: Props) {
           <span>{quote.data?.side === "BUY" ? "Best ask" : "Best bid"}</span>
           <b className="num">
             {quote.data
-              ? `${quote.data.priceHuman.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC / BTC`
+              ? `${quote.data.priceHuman.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC / ${pairedToken}`
               : "—"}
           </b>
         </div>

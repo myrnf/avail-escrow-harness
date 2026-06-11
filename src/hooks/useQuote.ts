@@ -49,7 +49,7 @@ export function useQuote({
     () => routeFor(network, tokenIn, tokenOut),
     [network, tokenIn, tokenOut]
   );
-  const market = useMarket(route?.ticker ?? network.kalqixMarketTicker);
+  const market = useMarket(route?.ticker ?? network.kalqixMarketTickers.cbBTC);
   const log = useActivityLog((s) => s.push);
 
   const query = useQuery({
