@@ -267,7 +267,8 @@ body::before {
 }
 .token-pill:hover:not(:disabled) { border-color: var(--ink); }
 .token-pill:disabled { opacity: 0.5; cursor: not-allowed; }
-.token-pill .tk-mark {
+.tk-mark {
+  flex: none;
   width: 18px; height: 18px;
   border-radius: 50%;
   display: inline-grid; place-items: center;
