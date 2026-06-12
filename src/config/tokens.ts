@@ -1,7 +1,7 @@
 import type { Address } from "viem";
 import type { NetworkConfig } from "./networks";
 
-export type TokenSymbol = "USDC" | "cbBTC";
+export type TokenSymbol = "USDC" | "cbBTC" | "ETH";
 
 /** Token metadata that doesn't vary by network: decimals, symbol, brand, glyph,
  *  and the canonical EIP-712 domain version for permit (used as fallback when
@@ -13,6 +13,10 @@ export interface TokenMeta {
   glyph: string;
   brand: string;
   permitDomainVersion: string;
+  /** Native chain asset (ETH). Has no ERC-20 contract — its per-network
+   *  `address` is the Avail escrow sentinel (0xEeee…). Drives the deposit
+   *  flow: paid via msg.value, never via approve/permit. */
+  isNative?: boolean;
 }
 
 /** Combined view: metadata + the per-network address and permit support. */
@@ -41,9 +45,24 @@ export const TOKEN_META: Record<TokenSymbol, TokenMeta> = {
     // Verified by reading the contract directly (does not expose eip712Domain).
     permitDomainVersion: "2",
   },
+  ETH: {
+    symbol: "ETH",
+    name: "Ether",
+    decimals: 18,
+    glyph: "Ξ",
+    brand: "#627EEA",
+    // Native asset — never permitted (AvailEscrow.deposit reverts
+    // PermitNotAllowedForEth). Value is unused but required by the type.
+    permitDomainVersion: "",
+    isNative: true,
+  },
 };
 
-export const TOKEN_LIST_META: TokenMeta[] = [TOKEN_META.USDC, TOKEN_META.cbBTC];
+export const TOKEN_LIST_META: TokenMeta[] = [
+  TOKEN_META.USDC,
+  TOKEN_META.cbBTC,
+  TOKEN_META.ETH,
+];
 
 export function getToken(
   network: NetworkConfig,

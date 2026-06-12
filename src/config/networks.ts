@@ -7,14 +7,29 @@ export type Stakes = "fake" | "real";
 export interface TokenAddresses {
   USDC: Address;
   cbBTC: Address;
+  /** Native ETH has no ERC-20 contract — this is the Avail escrow sentinel
+   *  (ETH_ADDRESS) the `/intent` API and `deposit()` expect for native. */
+  ETH: Address;
 }
 
 /** Per-network EIP-2612 support flag per token. Testnet's KalqiX-deployed
- *  tokens don't implement permit; canonical Circle USDC + Coinbase cbBTC do. */
+ *  tokens don't implement permit; canonical Circle USDC + Coinbase cbBTC do.
+ *  ETH is native and never permitted. */
 export interface PermitSupport {
   USDC: boolean;
   cbBTC: boolean;
+  ETH: boolean;
 }
+
+/** KalqiX market ticker (URL form, underscore-separated) per non-USDC asset.
+ *  USDC is always the quote leg. cbBTC differs by env (testnet trades BTC_USDC,
+ *  canary/mainnet trade cbBTC_USDC); ETH is ETH_USDC everywhere. */
+export type MarketTickers = Record<"cbBTC" | "ETH", string>;
+
+/** The de-facto native-ETH sentinel address, registered in Avail's asset
+ *  registry and matched on-chain by AvailEscrow's ETH_ADDRESS constant. */
+export const ETH_SENTINEL: Address =
+  "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 
 export interface NetworkConfig {
   key: NetworkKey;
@@ -27,8 +42,8 @@ export interface NetworkConfig {
   escrowContract: Address;
   explorerBaseUrl: string;
   kalqixBaseUrl: string;
-  /** URL-form ticker for the cbBTC ↔ USDC market on this KalqiX env. */
-  kalqixMarketTicker: string;
+  /** URL-form KalqiX market tickers per non-USDC asset on this env. */
+  kalqixMarketTickers: MarketTickers;
   availEscrowBaseUrl: string;
   tokens: TokenAddresses;
   permitSupport: PermitSupport;
@@ -50,13 +65,14 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     escrowContract: "0xDF06678Ca95fDBe30a719675779209B76370a1ee",
     explorerBaseUrl: "https://sepolia.basescan.org",
     kalqixBaseUrl: "https://testnet-api.kalqix.com/v1",
-    kalqixMarketTicker: "BTC_USDC",
+    kalqixMarketTickers: { cbBTC: "BTC_USDC", ETH: "ETH_USDC" },
     availEscrowBaseUrl: "https://avail-escrow-test.availproject.org",
     tokens: {
       USDC: "0x94d655f6cc102d1e7e3f7a0e66fa604779ca8306",
       cbBTC: "0xe58c5488de4d67dfb186ef955d412ff4473451a8",
+      ETH: ETH_SENTINEL,
     },
-    permitSupport: { USDC: false, cbBTC: false },
+    permitSupport: { USDC: false, cbBTC: false, ETH: false },
     configured: true,
   },
 
@@ -71,13 +87,14 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     escrowContract: "0xDF06678Ca95fDBe30a719675779209B76370a1ee",
     explorerBaseUrl: "https://basescan.org",
     kalqixBaseUrl: "https://api.kalqix.com/v1",
-    kalqixMarketTicker: "cbBTC_USDC",
+    kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
     availEscrowBaseUrl: "https://escrow-canary.availproject.org",
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+      ETH: ETH_SENTINEL,
     },
-    permitSupport: { USDC: true, cbBTC: true },
+    permitSupport: { USDC: true, cbBTC: true, ETH: false },
     configured: true,
   },
 
@@ -95,13 +112,14 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     escrowContract: ZERO_ADDRESS, // TODO: production escrow contract
     explorerBaseUrl: "https://basescan.org",
     kalqixBaseUrl: "https://api.kalqix.com/v1",
-    kalqixMarketTicker: "cbBTC_USDC",
+    kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
     availEscrowBaseUrl: "", // TODO: production Avail Escrow base URL
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
+      ETH: ETH_SENTINEL,
     },
-    permitSupport: { USDC: true, cbBTC: true },
+    permitSupport: { USDC: true, cbBTC: true, ETH: false },
     configured: false,
   },
 };
