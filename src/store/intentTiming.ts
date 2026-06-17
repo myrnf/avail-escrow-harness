@@ -22,12 +22,16 @@ export interface Lifecycle {
   intentId: string | null;
   steps: TimingStep[];
   endedAt: number | null;
+  /** KyberSwap benchmark output (tokenOut base units, as a string) snapshotted
+   *  at submit time, for the execution-panel comparison. null if unavailable. */
+  kyberAmountOut: string | null;
 }
 
 export const EMPTY_LIFECYCLE: Lifecycle = {
   intentId: null,
   steps: [],
   endedAt: null,
+  kyberAmountOut: null,
 };
 
 interface State {
@@ -35,6 +39,7 @@ interface State {
   start: (networkKey: string) => void;
   setIntentId: (networkKey: string, id: string) => void;
   recordStep: (networkKey: string, step: TimingStep) => void;
+  setKyberAmountOut: (networkKey: string, amount: string | null) => void;
   end: (networkKey: string, at: number) => void;
   reset: (networkKey: string) => void;
 }
@@ -52,6 +57,7 @@ export const useIntentTiming = create<State>((set) => ({
             { key: "submit", at: Date.now(), label: "Confirm swap", ok: true },
           ],
           endedAt: null,
+          kyberAmountOut: null,
         },
       },
     })),
@@ -73,6 +79,17 @@ export const useIntentTiming = create<State>((set) => ({
         entries: {
           ...s.entries,
           [networkKey]: { ...cur, steps: [...cur.steps, step] },
+        },
+      };
+    }),
+
+  setKyberAmountOut: (networkKey, amount) =>
+    set((s) => {
+      const cur = s.entries[networkKey] ?? EMPTY_LIFECYCLE;
+      return {
+        entries: {
+          ...s.entries,
+          [networkKey]: { ...cur, kyberAmountOut: amount },
         },
       };
     }),

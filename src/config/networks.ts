@@ -44,6 +44,9 @@ export interface NetworkConfig {
   kalqixBaseUrl: string;
   /** URL-form KalqiX market tickers per non-USDC asset on this env. */
   kalqixMarketTickers: MarketTickers;
+  /** KyberSwap aggregator chain slug for the benchmark quote, or undefined if
+   *  Kyber has no coverage (e.g. Base Sepolia testnet). Base mainnet = "base". */
+  kyberChainSlug?: string;
   availEscrowBaseUrl: string;
   tokens: TokenAddresses;
   permitSupport: PermitSupport;
@@ -86,6 +89,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     explorerBaseUrl: "https://basescan.org",
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
+    kyberChainSlug: "base",
     availEscrowBaseUrl: "https://escrow-canary.availproject.org",
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -111,6 +115,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     explorerBaseUrl: "https://basescan.org",
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
+    kyberChainSlug: "base",
     availEscrowBaseUrl: "https://atomic.api.mainnet.availproject.org",
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",

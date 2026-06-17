@@ -10,6 +10,7 @@ import {
   SLIPPAGE_PRESETS_BPS,
 } from "../config/avail";
 import { useQuote } from "../hooks/useQuote";
+import { useKyberQuote } from "../hooks/useKyberQuote";
 import { useInputBalance, useTokenAllowance, useApprove } from "../hooks/useErc20";
 import { useCreateIntent } from "../hooks/useIntent";
 import { useDeposit } from "../hooks/useDeposit";
@@ -72,6 +73,22 @@ export function SwapForm({ isInFlight }: Props) {
     slippageBps,
     enabled: amountIn > 0n && !isInFlight,
   });
+  // KyberSwap aggregator benchmark (best on-chain DEX route) for the same swap.
+  // Disabled where Kyber has no coverage (testnet) via network.kyberChainSlug.
+  const kyber = useKyberQuote({
+    tokenIn,
+    tokenOut,
+    amountIn,
+    enabled: amountIn > 0n && !isInFlight,
+  });
+  // Deviation of our expected output vs Kyber's, in bps. + = we beat Kyber.
+  const kyberDeviationBps =
+    quote.data && kyber.data && kyber.data.amountOut > 0n
+      ? Number(
+          ((quote.data.amountOut - kyber.data.amountOut) * 10000n) /
+            kyber.data.amountOut
+        )
+      : null;
   const approve = useApprove();
   const createIntent = useCreateIntent();
   const deposit = useDeposit();
@@ -235,6 +252,11 @@ export function SwapForm({ isInFlight }: Props) {
       setPermitError(null);
       const fresh = await quote.refetch();
       const q = fresh.data ?? quote.data;
+      // Snapshot the Kyber benchmark at submit so the execution panel can show
+      // actual-vs-Kyber after settlement. null if Kyber is unavailable here.
+      lifecycle.setKyberAmountOut(
+        kyber.data ? kyber.data.amountOut.toString() : null
+      );
       log({
         level: "info",
         channel: "QUOTE",
@@ -486,6 +508,29 @@ export function SwapForm({ isInFlight }: Props) {
               : "—"}
           </b>
         </div>
+        {network.kyberChainSlug ? (
+          <div className="swap__line">
+            <span>Kyberswap est.</span>
+            {kyber.data ? (
+              <span className="num">
+                {fmtAmount(kyber.data.amountOut, outInfo.decimals)} {tokenOut}
+                {kyberDeviationBps !== null ? (
+                  <span
+                    className={`swap__dev ${kyberDeviationBps >= 0 ? "is-better" : "is-worse"}`}
+                  >
+                    {" "}
+                    {kyberDeviationBps >= 0 ? "+" : ""}
+                    {(kyberDeviationBps / 100).toFixed(2)}% vs Kyber
+                  </span>
+                ) : null}
+              </span>
+            ) : kyber.isError ? (
+              <span className="err">unavailable</span>
+            ) : (
+              <span className="num">…</span>
+            )}
+          </div>
+        ) : null}
         <div className="swap__line">
           <span>Quote refresh</span>
           <span className="num">

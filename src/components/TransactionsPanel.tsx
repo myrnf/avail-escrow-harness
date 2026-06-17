@@ -87,10 +87,12 @@ function ExecutionView({
   data,
   network,
   depositTxHash,
+  kyberAmountOut,
 }: {
   data: IntentDetail;
   network: NetworkConfig;
   depositTxHash: string | null;
+  kyberAmountOut: string | null;
 }) {
   const inputTok = tokenInfoByAddress(network, data.input.token_in);
   const outputTok = tokenInfoByAddress(network, data.input.token_out);
@@ -118,6 +120,8 @@ function ExecutionView({
       ? BigInt(data.order.amount_out)
       : null;
 
+  const kyberOut = kyberAmountOut ? BigInt(kyberAmountOut) : null;
+
   const vsMin =
     amountActual !== null
       ? fmtSignedPct(amountActual, amountOutMin)
@@ -125,6 +129,10 @@ function ExecutionView({
   const vsQuote =
     amountActual !== null && amountOutQuote !== null
       ? fmtSignedPct(amountActual, amountOutQuote)
+      : null;
+  const vsKyber =
+    amountActual !== null && kyberOut !== null && kyberOut > 0n
+      ? fmtSignedPct(amountActual, kyberOut)
       : null;
 
   return (
@@ -143,6 +151,14 @@ function ExecutionView({
             : "—"}
         </span>
       </div>
+      {kyberOut !== null ? (
+        <div className="exec__row">
+          <span className="exec__label">Kyberswap est.</span>
+          <span className="exec__value">
+            {fmtAmount(kyberOut, outputDecimals)} {outputSymbol}
+          </span>
+        </div>
+      ) : null}
       <div className="exec__row">
         <span className="exec__label">Min out</span>
         <span className="exec__value">
@@ -157,7 +173,7 @@ function ExecutionView({
             : "—"}
         </span>
       </div>
-      {vsMin || vsQuote ? (
+      {vsMin || vsQuote || vsKyber ? (
         <div className="exec__deltas">
           {vsQuote ? (
             <span
@@ -168,6 +184,17 @@ function ExecutionView({
               }
             >
               {vsQuote} vs quote
+            </span>
+          ) : null}
+          {vsKyber ? (
+            <span
+              className={
+                vsKyber.startsWith("+")
+                  ? "exec__delta is-better"
+                  : "exec__delta is-worse"
+              }
+            >
+              {vsKyber} vs Kyber
             </span>
           ) : null}
           {vsMin ? (
@@ -236,6 +263,7 @@ export function TransactionsPanel() {
           data={data}
           network={network}
           depositTxHash={depositTxHash}
+          kyberAmountOut={lifecycle.kyberAmountOut}
         />
       </Panel>
     );
