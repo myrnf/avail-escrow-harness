@@ -142,8 +142,11 @@ export function quoteSwap(input: QuoteInput): Quote {
   const minTradeSize = BigInt(market.min_trade_size);
 
   // ---------- 1. derive effective input + gross output ----------
-  // Rule: BASE-asset side of an order aligns to step_size; QUOTE-asset side
-  // aligns to tick_size (scaled to quote base units).
+  // The BASE-asset side aligns to step_size (a real KalqiX quantity
+  // constraint). The QUOTE-asset side is NOT tick-aligned: tick_size is a price
+  // increment, not a notional constraint. BUY still floors its quote-asset
+  // *input* to the tick as a conservative spend cap (never spends more than
+  // entered); the SELL *output* keeps full quote precision (see step 3).
   let effectiveAmountIn = amountIn;
   let amountOutGross: bigint;
 
@@ -180,7 +183,7 @@ export function quoteSwap(input: QuoteInput): Quote {
   let amountOut = (amountOutGross * (BPS_DENOM - feeBps)) / BPS_DENOM;
   let amountOutMin = (amountOut * (BPS_DENOM - BigInt(slippageBps))) / BPS_DENOM;
 
-  // ---------- 3. align the OUTPUT side to its grid ----------
+  // ---------- 3. align / validate the OUTPUT side ----------
   if (side === "BUY") {
     // amount_out is base → step grid.
     amountOut = floorToStep(amountOut, stepSize);
@@ -197,9 +200,13 @@ export function quoteSwap(input: QuoteInput): Quote {
       );
     }
   } else {
-    // amount_out is quote → tick grid.
-    amountOut = floorToStep(amountOut, tickSize);
-    amountOutMin = floorToStep(amountOutMin, tickSize);
+    // amount_out is the quote asset. tick_size is a *price* increment, not a
+    // constraint on the output notional — settlement delivers price × quantity
+    // at full quote-asset precision (e.g. 12.298736 USDC), and Avail's /intent
+    // API accepts non-tick-aligned amounts (verified). So we keep full 6-dp
+    // precision here instead of flooring to the tick; the BigInt division above
+    // already floors to base units, which stays conservative for the on-chain
+    // `received >= amountOutMin` check. Only the min-trade-size floor applies.
     if (amountOutMin < minTradeSize) {
       throw new QuoteValidationError(
         `Below market minimum trade size: ${formatBaseUnits(minTradeSize, market.quote_asset_decimals)} ${market.quote_asset} notional required after fees + slippage.`
