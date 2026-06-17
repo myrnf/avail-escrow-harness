@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/kyber/:path*", "destination": "https://aggregator-api.kyberswap.com/:path*" },
     { "source": "/test-solver/:path*", "destination": "/index.html" },
     { "source": "/test-solver", "destination": "/index.html" }
   ]

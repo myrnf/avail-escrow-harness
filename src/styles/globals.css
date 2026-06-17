@@ -357,6 +357,9 @@ body::before {
 .swap__line b { color: var(--ink); font-weight: 500; }
 .swap__line .num { font-feature-settings: "tnum"; }
 .swap__line .err { color: var(--oxide); }
+.swap__dev { font-size: 10.5px; letter-spacing: 0.04em; }
+.swap__dev.is-better { color: var(--forest); }
+.swap__dev.is-worse  { color: var(--oxide); }
 
 .swap__slip {
   display: flex;
