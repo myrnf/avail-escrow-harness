@@ -51,8 +51,6 @@ export interface NetworkConfig {
   configured: boolean;
 }
 
-const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000";
-
 export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
   testnet: {
     key: "testnet",
@@ -98,9 +96,9 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     configured: true,
   },
 
-  // ---- Production mainnet — stub. Fill in once Avail ships prod escrow. ----
-  // To enable: set escrowContract + availEscrowBaseUrl, flip configured: true.
-  // Token addresses are already canonical Circle USDC / Coinbase cbBTC.
+  // ---- Production mainnet — live as of 2026-06-17. Verified end-to-end:
+  // /intent returns valid calldata for USDC/cbBTC/ETH (contract matches), and
+  // on-chain supportedAssets is true for all three. Same KalqiX env as canary.
   mainnet: {
     key: "mainnet",
     label: "Base Mainnet",
@@ -109,18 +107,18 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     stakes: "real",
     rpcUrl:
       import.meta.env.VITE_BASE_MAINNET_RPC || "https://mainnet.base.org",
-    escrowContract: ZERO_ADDRESS, // TODO: production escrow contract
+    escrowContract: "0x74aED8C89b09bd96d87Add00744340289A1Ae90e",
     explorerBaseUrl: "https://basescan.org",
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
-    availEscrowBaseUrl: "", // TODO: production Avail Escrow base URL
+    availEscrowBaseUrl: "https://atomic.api.mainnet.availproject.org",
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
       ETH: ETH_SENTINEL,
     },
     permitSupport: { USDC: true, cbBTC: true, ETH: false },
-    configured: false,
+    configured: true,
   },
 };
 
