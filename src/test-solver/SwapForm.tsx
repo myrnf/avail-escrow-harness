@@ -231,7 +231,9 @@ export function SwapForm() {
         <div className="swap__line">
           <span>Taker fee</span>
           <span className="num">
-            {quote.data ? `${(quote.data.takerFeeBps / 100).toFixed(2)} %` : "—"}
+            {quote.data?.takerFeeBps != null
+              ? `${(quote.data.takerFeeBps / 100).toFixed(2)} %`
+              : "—"}
           </span>
         </div>
         <div className="swap__line">

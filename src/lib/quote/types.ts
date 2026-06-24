@@ -39,7 +39,9 @@ export interface Quote {
   amountOutDecimals: number;
   /** Price displayed in human units (quote per base, e.g. USDC per BTC). */
   priceHuman: number;
-  takerFeeBps: number;
+  /** null when the quote source doesn't expose a fee breakdown (Avail /quote
+   *  returns amount_out already net of fees, with no separate fee field). */
+  takerFeeBps: number | null;
   slippageBps: number;
   side: Side;
   ticker: string;
