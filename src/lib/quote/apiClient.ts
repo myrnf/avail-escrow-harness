@@ -28,32 +28,28 @@ interface Params {
 }
 
 /**
- * Fetch a quote from Avail's GET /quote via the same-origin /api/quote proxy.
- * The proxy is required because GET /quote takes a JSON *body*, which browsers
- * refuse to send on GET (see api/_availQuote.js). Addresses are lowercased to
- * match Avail's case-sensitive asset registry (same as the intent client).
+ * Fetch a quote from Avail's GET /quote. The endpoint takes query params and
+ * sends `access-control-allow-origin: *`, so we call it directly from the
+ * browser — no proxy needed. Addresses are lowercased to match Avail's
+ * case-sensitive asset registry (same as the intent client).
  */
 export async function getAvailQuote(
   baseUrl: string,
   { tokenIn, tokenOut, amountIn, slippageBps }: Params
 ): Promise<AvailQuoteResponse> {
-  const res = await fetch("/api/quote", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      baseUrl,
-      token_in: tokenIn.toLowerCase(),
-      token_out: tokenOut.toLowerCase(),
-      amount_in: amountIn.toString(),
-      slippage_bps: slippageBps,
-    }),
+  const params = new URLSearchParams({
+    token_in: tokenIn.toLowerCase(),
+    token_out: tokenOut.toLowerCase(),
+    amount_in: amountIn.toString(),
+    slippage_bps: String(slippageBps),
   });
+  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/quote?${params}`);
   const text = await res.text();
-  let json: AvailQuoteResponse;
   try {
-    json = JSON.parse(text);
+    // Both success and request-level errors come back as JSON (with error_code);
+    // the caller inspects error_code / quotes.
+    return JSON.parse(text) as AvailQuoteResponse;
   } catch {
-    throw new Error(`Quote proxy ${res.status}: ${text.slice(0, 160)}`);
+    throw new Error(`/quote ${res.status}: ${text.slice(0, 160)}`);
   }
-  return json;
 }
