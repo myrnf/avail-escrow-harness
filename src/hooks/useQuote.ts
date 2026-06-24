@@ -95,7 +95,7 @@ export function useQuote({
         log({
           level: "info",
           channel: "API",
-          message: `POST /quote ${tokenIn}→${tokenOut} · ${resp.error_code ?? "200"}`,
+          message: `GET /quote ${tokenIn}→${tokenOut} · ${resp.error_code ?? "200"}`,
           details: `${Math.round(performance.now() - t0)}ms`,
         });
         if (resp.error_code) {
