@@ -47,6 +47,10 @@ export interface NetworkConfig {
   /** KyberSwap aggregator chain slug for the benchmark quote, or undefined if
    *  Kyber has no coverage (e.g. Base Sepolia testnet). Base mainnet = "base". */
   kyberChainSlug?: string;
+  /** true → quote via Avail's GET /quote API (the service owns the math);
+   *  false/undefined → quote locally via KalqiX + quoteSwap. Mainnet stays
+   *  local until Avail ships /quote there (currently 404). */
+  useQuoteApi?: boolean;
   availEscrowBaseUrl: string;
   tokens: TokenAddresses;
   permitSupport: PermitSupport;
@@ -67,6 +71,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     explorerBaseUrl: "https://sepolia.basescan.org",
     kalqixBaseUrl: "https://testnet-api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "BTC_USDC", ETH: "ETH_USDC" },
+    useQuoteApi: true,
     availEscrowBaseUrl: "https://avail-escrow-test.availproject.org",
     tokens: {
       USDC: "0x94d655f6cc102d1e7e3f7a0e66fa604779ca8306",
@@ -90,6 +95,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
     kyberChainSlug: "base",
+    useQuoteApi: true,
     availEscrowBaseUrl: "https://escrow-canary.availproject.org",
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -116,6 +122,8 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
     kyberChainSlug: "base",
+    // Local quoting until Avail ships GET /quote on mainnet (currently 404).
+    useQuoteApi: false,
     availEscrowBaseUrl: "https://atomic.api.mainnet.availproject.org",
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",

@@ -494,12 +494,14 @@ export function SwapForm({ isInFlight }: Props) {
               : "—"}
           </b>
         </div>
-        <div className="swap__line">
-          <span>Taker fee</span>
-          <span className="num">
-            {quote.data ? `${(quote.data.takerFeeBps / 100).toFixed(2)} %` : "—"}
-          </span>
-        </div>
+        {quote.data?.takerFeeBps != null ? (
+          <div className="swap__line">
+            <span>Taker fee</span>
+            <span className="num">
+              {(quote.data.takerFeeBps / 100).toFixed(2)} %
+            </span>
+          </div>
+        ) : null}
         <div className="swap__line">
           <span>Min received</span>
           <b className="num">
