@@ -9,9 +9,11 @@ export const SLIPPAGE_PRESETS_BPS = [10, 50, 100] as const;
  *  confirmed backend tolerance exists. */
 export const QUOTE_TTL_MS = 30_000;
 
-/** Tokens the app allows on the KYBERSWAP path. The backend quotes KYBERSWAP
- *  without any supported-token configuration and does NOT enforce per-venue
- *  token/limit checks unless a /supported-token row exists — so the app owns
- *  this allowlist rather than relying on the backend to reject. Effectively
- *  excludes ETH pairs from KyberSwap routing. */
-export const KYBERSWAP_TOKEN_ALLOWLIST = ["USDC", "cbBTC"] as const;
+/** Tokens the app allows on the KYBERSWAP path. /v2/quote quotes KYBERSWAP
+ *  for any token and enforces no per-venue token/limit checks unless a
+ *  /supported-token row exists — so the app owns this allowlist rather than
+ *  relying on quote-time rejection. (POST /intent DOES validate per venue:
+ *  unregistered tokens fail BAD_TOKEN_IN.) All harness tokens are allowed,
+ *  including ETH — exercising the native-value path (transaction_value for
+ *  ETH-in, WETH-unwrap for ETH-out) is part of what canary tests. */
+export const KYBERSWAP_TOKEN_ALLOWLIST = ["USDC", "cbBTC", "ETH"] as const;
