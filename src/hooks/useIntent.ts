@@ -2,10 +2,13 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   createIntent,
   getIntent,
-  isOrderTerminal,
-  isSettlementTerminal,
+  getIntentV2,
+  viewFromV1,
+  viewFromV2,
   type CreateIntentRequest,
+  type IntentStatusView,
 } from "../lib/intent";
+import { shortAddress } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
 import { useActiveNetwork } from "./useActiveNetwork";
 
@@ -23,10 +26,14 @@ export function useCreateIntent() {
       const t0 = performance.now();
       const success = await createIntent(network.availEscrowBaseUrl, body);
       const dt = Math.round(performance.now() - t0);
+      // KYBERSWAP intents have no solver; surface the router value instead.
+      const tail = success.solver_address
+        ? `solver ${shortAddress(success.solver_address)}`
+        : `value ${success.transaction_value ?? "0"}`;
       log({
         level: "info",
         channel: "API",
-        message: `POST /intent · 200 · solver ${success.solver_address.slice(0, 6)}…${success.solver_address.slice(-4)}`,
+        message: `POST /intent · 200 · ${tail}`,
         details: `${dt}ms`,
       });
       return success;
@@ -41,19 +48,30 @@ export function useCreateIntent() {
   });
 }
 
+/**
+ * Poll a KALQIX intent to its terminal state. Envs with `venues` configured
+ * use GET /v2/intent/{id}; the legacy env (mainnet) keeps the old
+ * GET /intent/{id}. Both shapes normalize to IntentStatusView, so consumers
+ * never branch on the API version.
+ *
+ * Callers must pass null for KYBERSWAP swaps — those have no backend
+ * lifecycle; their terminal state is the router tx receipt.
+ */
 export function useIntentStatus(id: string | null) {
   const network = useActiveNetwork();
-  return useQuery({
-    queryKey: ["intent", network.key, id],
+  const v2 = !!network.venues;
+  return useQuery<IntentStatusView | null>({
+    queryKey: ["intent", v2 ? "v2" : "v1", network.key, id],
     enabled: !!id,
-    queryFn: () => getIntent(network.availEscrowBaseUrl, id!),
-    refetchInterval: (q) => {
-      const d = q.state.data;
-      if (!d) return POLL_MS;
-      if (isOrderTerminal(d.order) && isSettlementTerminal(d.settlement)) {
-        return false;
+    queryFn: async () => {
+      if (v2) {
+        const d = await getIntentV2(network.availEscrowBaseUrl, id!);
+        return d ? viewFromV2(d) : null;
       }
-      return POLL_MS;
+      const d = await getIntent(network.availEscrowBaseUrl, id!);
+      return d ? viewFromV1(d) : null;
     },
+    refetchInterval: (q) =>
+      q.state.data?.isTerminal ? false : POLL_MS,
   });
 }

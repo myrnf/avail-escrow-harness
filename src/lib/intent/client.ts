@@ -5,6 +5,7 @@ import type {
   IntentDetail,
   IntentErrorCode,
 } from "./types";
+import type { IntentDetailV2 } from "./v2Types";
 
 export class AvailIntentError extends Error {
   constructor(
@@ -97,7 +98,11 @@ export async function createIntent(
       id: obj.id as string,
       encoded_calldata: obj.encoded_calldata as CreateIntentSuccess["encoded_calldata"],
       contract_address: obj.contract_address as CreateIntentSuccess["contract_address"],
-      solver_address: obj.solver_address as CreateIntentSuccess["solver_address"],
+      // Null for KYBERSWAP intents — no solver involved.
+      solver_address: (obj.solver_address ??
+        null) as CreateIntentSuccess["solver_address"],
+      // KYBERSWAP: native value the router tx must carry. Null for KALQIX.
+      transaction_value: (obj.transaction_value ?? null) as string | null,
     };
     if (!success.id || !success.encoded_calldata) {
       throw new AvailIntentError(
@@ -147,4 +152,25 @@ export async function getIntent(
   const body = await res.json();
   if (body === null) return null;
   return body as IntentDetail;
+}
+
+/** GET /v2/intent/{id} — KALQIX intents only (KYBERSWAP swaps have no
+ *  backend lifecycle). 404 → null, same semantics as the legacy getIntent. */
+export async function getIntentV2(
+  baseUrl: string,
+  id: string
+): Promise<IntentDetailV2 | null> {
+  if (!baseUrl) return null;
+  const res = await fetch(`${baseUrl}/v2/intent/${encodeURIComponent(id)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new AvailIntentError(
+      `GET /v2/intent/${id} → ${res.status}`,
+      "INTERNAL_ERROR",
+      res.status
+    );
+  }
+  const body = await res.json();
+  if (body === null) return null;
+  return body as IntentDetailV2;
 }

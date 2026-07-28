@@ -4,6 +4,9 @@ import type { Address, Chain } from "viem";
 export type NetworkKey = "testnet" | "canary" | "mainnet";
 export type Stakes = "fake" | "real";
 
+/** Execution venues the Avail orchestrator can quote and route through. */
+export type Venue = "KALQIX" | "KYBERSWAP";
+
 export interface TokenAddresses {
   USDC: Address;
   cbBTC: Address;
@@ -47,10 +50,12 @@ export interface NetworkConfig {
   /** KyberSwap aggregator chain slug for the benchmark quote, or undefined if
    *  Kyber has no coverage (e.g. Base Sepolia testnet). Base mainnet = "base". */
   kyberChainSlug?: string;
-  /** true → quote via Avail's GET /quote API (the service owns the math);
-   *  false/undefined → quote locally via KalqiX + quoteSwap. Mainnet stays
-   *  local until Avail ships /quote there (currently 404). */
-  useQuoteApi?: boolean;
+  /** Venues the multi-venue backend serves on this env. Present → the app
+   *  uses GET /v2/quote, venue-aware POST /intent, GET /v2/intent/{id} and
+   *  GET /supported-token. ABSENT → legacy path: local KalqiX quoting plus
+   *  the old POST /intent + GET /intent/{id} shapes (mainnet, until its
+   *  backend is upgraded to the multi-venue orchestrator). */
+  venues?: Venue[];
   availEscrowBaseUrl: string;
   tokens: TokenAddresses;
   permitSupport: PermitSupport;
@@ -71,7 +76,9 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     explorerBaseUrl: "https://sepolia.basescan.org",
     kalqixBaseUrl: "https://testnet-api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "BTC_USDC", ETH: "ETH_USDC" },
-    useQuoteApi: true,
+    // KALQIX-only on purpose: Kyber has no Base Sepolia coverage, and the
+    // testnet UX must stay identical to the single-venue app.
+    venues: ["KALQIX"],
     availEscrowBaseUrl: "https://avail-escrow-test.availproject.org",
     tokens: {
       USDC: "0x94d655f6cc102d1e7e3f7a0e66fa604779ca8306",
@@ -95,7 +102,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
     kyberChainSlug: "base",
-    useQuoteApi: true,
+    venues: ["KALQIX", "KYBERSWAP"],
     availEscrowBaseUrl: "https://escrow-canary.availproject.org",
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -122,8 +129,8 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
     kyberChainSlug: "base",
-    // Local quoting until Avail ships GET /quote on mainnet (currently 404).
-    useQuoteApi: false,
+    // No `venues`: mainnet stays on the legacy path (local quoting + old
+    // intent shapes) until its backend runs the multi-venue orchestrator.
     availEscrowBaseUrl: "https://atomic.api.mainnet.availproject.org",
     tokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -145,6 +152,10 @@ export function networkForChainId(id: number | undefined): NetworkConfig | null 
     if (n.chain.id === id) return n;
   }
   return null;
+}
+
+export function venueEnabled(network: NetworkConfig, venue: Venue): boolean {
+  return !!network.venues?.includes(venue);
 }
 
 export function txExplorerUrl(network: NetworkConfig, hash: string): string {

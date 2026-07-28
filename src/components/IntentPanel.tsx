@@ -1,17 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Panel, PanelStatus, Dot } from "./primitives/Panel";
 import { useIntentStatus } from "../hooks/useIntent";
-import {
-  isOrderTerminal,
-  isSettlementTerminal,
-  terminalVerdict,
-  type OrderOutcome,
-  type SettlementOutcome,
-} from "../lib/intent";
+import type { SettlementPhase, TradePhase } from "../lib/intent";
 import { shortHash } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
 import { type StepKey, type TimingStep } from "../store/intentTiming";
 import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
+import { useActiveNetwork } from "../hooks/useActiveNetwork";
 
 
 // "submit" is the timeline anchor used to compute the first phase duration —
@@ -22,7 +17,7 @@ import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
 // the full sign-and-mine wall time.
 // "permit" is only rendered when the swap actually collected one (canary/mainnet
 // + ERC20 paths); testnet swaps skip the row entirely.
-const STEP_ORDER: { key: StepKey; label: string }[] = [
+const KALQIX_STEP_ORDER: { key: StepKey; label: string }[] = [
   { key: "permit", label: "Permit signed (off-chain)" },
   { key: "createIntent", label: "POST /intent" },
   { key: "deposited", label: "User deposited (IntentDeposited)" },
@@ -32,58 +27,34 @@ const STEP_ORDER: { key: StepKey; label: string }[] = [
   { key: "settled", label: "User filled (IntentSettled)" },
 ];
 
-const RENDERED_KEYS = new Set<StepKey>(STEP_ORDER.map((s) => s.key));
+// KYBERSWAP: no escrow, no solver, no settlement — the router tx receipt is
+// the terminal state. "routerTx" (broadcast) is collapsed into the confirmed
+// row the same way "deposit" is above.
+const KYBER_STEP_ORDER: { key: StepKey; label: string }[] = [
+  { key: "createIntent", label: "POST /intent" },
+  { key: "routerConfirmed", label: "Router swap confirmed" },
+];
 
-function describeOrderOutcome(o: OrderOutcome): string {
-  if (o.status === "FAILED") {
-    return o.error_message ? `Failed · ${o.error_message}` : "Failed";
-  }
-  if (o.status === "SUCCESS") return "Success";
-  if (o.status === "PENDING") return "Pending";
-  return "Unknown";
-}
-
-function describeSettlementOutcome(s: SettlementOutcome): string {
-  if (s.status === "SETTLED") {
-    return s.tx_hash ? `Settled · ${shortHash(s.tx_hash)}` : "Settled";
-  }
-  if (s.status === "UNLOCKED") {
-    return s.tx_hash ? `Unlocked · ${shortHash(s.tx_hash)}` : "Unlocked";
-  }
-  if (s.status === "FAILED_TO_SETTLE") {
-    return s.error_message
-      ? `Failed to settle · ${s.error_message}`
-      : "Failed to settle";
-  }
-  if (s.status === "FAILED_TO_UNLOCK") {
-    return s.error_message
-      ? `Failed to unlock · ${s.error_message}`
-      : "Failed to unlock";
-  }
-  if (s.status === "PENDING") return "Pending";
-  return "Unknown";
-}
-
-function orderPill(o: OrderOutcome): {
+function tradePill(phase: TradePhase): {
   cls: string;
   dot: "idle" | "live" | "warn" | "ok" | "err";
 } {
-  if (o.status === "PENDING") return { cls: "is-pending", dot: "live" };
-  if (o.status === "SUCCESS") return { cls: "is-ok", dot: "ok" };
-  if (o.status === "FAILED") return { cls: "is-err", dot: "err" };
+  if (phase === "pending") return { cls: "is-pending", dot: "live" };
+  if (phase === "ok") return { cls: "is-ok", dot: "ok" };
+  if (phase === "failed") return { cls: "is-err", dot: "err" };
+  if (phase === "no_match" || phase === "expired")
+    return { cls: "is-err", dot: "warn" };
   return { cls: "", dot: "idle" };
 }
 
-function settlementPill(s: SettlementOutcome): {
+function settlementPill(phase: SettlementPhase): {
   cls: string;
   dot: "idle" | "live" | "warn" | "ok" | "err";
 } {
-  if (s.status === "PENDING") return { cls: "is-pending", dot: "live" };
-  if (s.status === "SETTLED") return { cls: "is-ok", dot: "ok" };
-  if (s.status === "UNLOCKED") return { cls: "is-err", dot: "warn" };
-  if (s.status === "FAILED_TO_SETTLE" || s.status === "FAILED_TO_UNLOCK") {
-    return { cls: "is-err", dot: "err" };
-  }
+  if (phase === "pending") return { cls: "is-pending", dot: "live" };
+  if (phase === "settled") return { cls: "is-ok", dot: "ok" };
+  if (phase === "unlocked") return { cls: "is-err", dot: "warn" };
+  if (phase === "failed") return { cls: "is-err", dot: "err" };
   return { cls: "", dot: "idle" };
 }
 
@@ -93,8 +64,12 @@ function fmtMs(ms: number): string {
 }
 
 export function IntentPanel() {
+  const network = useActiveNetwork();
   const lifecycle = useCurrentLifecycle();
-  const intentId = lifecycle.intentId;
+  const isKyber = lifecycle.venue === "KYBERSWAP";
+  // KYBERSWAP swaps have no backend lifecycle — never poll /v2/intent for
+  // them; the router tx receipt (recorded by SwapForm) is terminal.
+  const intentId = isKyber ? null : lifecycle.intentId;
   const status = useIntentStatus(intentId);
   const data = status.data;
   const log = useActivityLog((s) => s.push);
@@ -107,76 +82,47 @@ export function IntentPanel() {
     return () => clearInterval(id);
   }, [lifecycle.endedAt, lifecycle.steps.length]);
 
-  // ---------- LIFECYCLE: detect order terminal ----------
-  const orderTerminal = data ? isOrderTerminal(data.order) : false;
+  // ---------- LIFECYCLE: detect trade terminal (KALQIX only) ----------
+  const tradeTerminal = data ? data.isTradeTerminal : false;
   useEffect(() => {
-    if (!data || !orderTerminal) return;
-    const o = data.order;
-    const ok = o.status === "SUCCESS";
-    const detail =
-      o.status === "FAILED"
-        ? o.error_message ?? "FAILED"
-        : o.amount_out_symbol ?? "";
+    if (!data || !tradeTerminal) return;
     lifecycle.recordStep({
       key: "fill",
       at: Date.now(),
       label: "KalqiX fill",
-      ok,
-      detail,
+      ok: data.trade.phase === "ok",
+      detail: data.trade.detail,
     });
-  }, [orderTerminal]);
+  }, [tradeTerminal]);
 
-  // ---------- LIFECYCLE: detect settlement terminal ----------
-  const settlementTerminal = data
-    ? isSettlementTerminal(data.settlement)
-    : false;
+  // ---------- LIFECYCLE: detect end state (KALQIX only) ----------
+  // endStep is prepared by the status view: settlement went terminal, or the
+  // intent died without settlement ever initiating (v2 expiry edge). Either
+  // way the lifecycle must end, or isInFlight locks the swap CTA forever.
+  const hasEndStep = !!data?.endStep;
   useEffect(() => {
-    if (!data || !settlementTerminal) return;
-    const s = data.settlement;
-    let label = "Settlement";
-    let detail = "";
-    let ok = true;
-    let tx: string | undefined;
-    if (s.status === "SETTLED") {
-      label = "User filled (IntentSettled)";
-      tx = s.tx_hash ?? undefined;
-    } else if (s.status === "UNLOCKED") {
-      label = "User refunded (IntentUnlocked)";
-      tx = s.tx_hash ?? undefined;
-      ok = false;
-    } else if (s.status === "FAILED_TO_SETTLE") {
-      label = "Settlement failed";
-      detail = s.error_message ?? "FAILED_TO_SETTLE";
-      ok = false;
-    } else if (s.status === "FAILED_TO_UNLOCK") {
-      label = "Unlock failed";
-      detail = s.error_message ?? "FAILED_TO_UNLOCK";
-      ok = false;
-    }
+    if (!data?.endStep) return;
     lifecycle.recordStep({
       key: "settled",
       at: Date.now(),
-      label,
-      ok,
-      detail,
-      tx,
+      ...data.endStep,
     });
     lifecycle.end(Date.now());
 
     // Activity log
-    const verdict = terminalVerdict(data);
+    const verdict = data.terminal;
     if (verdict?.kind === "settled") {
       log({
         level: "ok",
         channel: "EVT",
-        message: `IntentSettled · ${data.intent_id}`,
+        message: `IntentSettled · ${data.id}`,
         details: shortHash(verdict.settlementTx),
       });
     } else if (verdict?.kind === "unlocked") {
       log({
         level: "warn",
         channel: "EVT",
-        message: `IntentUnlocked · ${data.intent_id}`,
+        message: `IntentUnlocked · ${data.id}`,
         details: verdict.tx ? shortHash(verdict.tx) : "no tx hash",
       });
     } else if (verdict) {
@@ -186,9 +132,15 @@ export function IntentPanel() {
         message: `${verdict.kind} (${verdict.where}) · ${verdict.reason}`,
       });
     }
-  }, [settlementTerminal]);
+  }, [hasEndStep]);
 
   // ---------- TIMELINE STEPS ----------
+  const stepOrder = isKyber ? KYBER_STEP_ORDER : KALQIX_STEP_ORDER;
+  const renderedKeys = useMemo(
+    () => new Set<StepKey>(stepOrder.map((s) => s.key)),
+    [stepOrder]
+  );
+
   const startAt = lifecycle.steps.find((s) => s.key === "submit")?.at;
   const stepsByKey = useMemo(() => {
     const map = new Map<StepKey, TimingStep>();
@@ -203,7 +155,7 @@ export function IntentPanel() {
   const durationByKey = useMemo(() => {
     const map = new Map<StepKey, number>();
     const filtered = lifecycle.steps.filter(
-      (s) => s.key === "submit" || RENDERED_KEYS.has(s.key)
+      (s) => s.key === "submit" || renderedKeys.has(s.key)
     );
     for (let i = 1; i < filtered.length; i++) {
       const step = filtered[i];
@@ -211,7 +163,7 @@ export function IntentPanel() {
       if (step && prev) map.set(step.key, step.at - prev.at);
     }
     return map;
-  }, [lifecycle.steps]);
+  }, [lifecycle.steps, renderedKeys]);
 
   const elapsedMs = useMemo(() => {
     if (!startAt) return 0;
@@ -222,11 +174,30 @@ export function IntentPanel() {
   const titleStatus = useMemo(() => {
     if (!intentId && lifecycle.steps.length === 0)
       return <PanelStatus state="idle">Standby</PanelStatus>;
+    // KYBERSWAP: terminal state comes from the recorded receipt step, not
+    // poll data (which stays undefined for router swaps).
+    if (isKyber) {
+      if (lifecycle.endedAt !== null) {
+        const confirmed = lifecycle.steps.find(
+          (s) => s.key === "routerConfirmed"
+        );
+        return confirmed?.ok ? (
+          <PanelStatus state="ok">Swapped</PanelStatus>
+        ) : (
+          <PanelStatus state="err">Terminal · error</PanelStatus>
+        );
+      }
+      return <PanelStatus state="live">In flight</PanelStatus>;
+    }
+    // Ended with no poll data: the tx was rejected/reverted before any
+    // backend state existed (SwapForm ends the lifecycle to unlock the CTA).
+    if (!data && lifecycle.endedAt !== null)
+      return <PanelStatus state="err">Terminal · error</PanelStatus>;
     if (!data && lifecycle.steps.length > 0)
       return <PanelStatus state="live">Submitting…</PanelStatus>;
     if (!data) return <PanelStatus state="live">Loading…</PanelStatus>;
     if (lifecycle.endedAt !== null) {
-      const v = terminalVerdict(data);
+      const v = data.terminal;
       if (v?.kind === "settled")
         return <PanelStatus state="ok">Settled</PanelStatus>;
       if (v?.kind === "unlocked")
@@ -234,9 +205,13 @@ export function IntentPanel() {
       return <PanelStatus state="err">Terminal · error</PanelStatus>;
     }
     return <PanelStatus state="live">In flight</PanelStatus>;
-  }, [intentId, data, lifecycle.endedAt, lifecycle.steps.length]);
+  }, [intentId, isKyber, data, lifecycle.endedAt, lifecycle.steps]);
 
   const showEmpty = lifecycle.steps.length === 0 && !intentId;
+  // Venue badge only where a venue choice exists (multi-venue envs) — the
+  // testnet single-venue UI stays exactly as before.
+  const showVenueBadge =
+    !!lifecycle.venue && (network.venues?.length ?? 0) > 1;
 
   return (
     <Panel title="Intent" status={titleStatus}>
@@ -249,65 +224,72 @@ export function IntentPanel() {
         <div className="intent">
           <div className="intent__id">
             <span className="label">ID</span>
-            <span>{lifecycle.intentId ?? intentId ?? "—"}</span>
+            <span>
+              {showVenueBadge ? (
+                <span className="venue-badge">{lifecycle.venue}</span>
+              ) : null}
+              {lifecycle.intentId ?? intentId ?? "—"}
+            </span>
             <span className="deadline">
               {lifecycle.endedAt !== null ? "TOTAL" : "ELAPSED"} ·{" "}
               {fmtMs(elapsedMs)}
             </span>
           </div>
 
-          {data ? (
+          {data && !isKyber ? (
             <div className="intent-states">
-              <div className={`state-pill ${orderPill(data.order).cls}`}>
+              <div className={`state-pill ${tradePill(data.trade.phase).cls}`}>
                 <span className="label">Order state</span>
                 <span className="value">
-                  <Dot state={orderPill(data.order).dot} />
-                  {describeOrderOutcome(data.order)}
+                  <Dot state={tradePill(data.trade.phase).dot} />
+                  {data.trade.text}
                 </span>
               </div>
               <div className="intent-states__sep">→</div>
-              <div className={`state-pill ${settlementPill(data.settlement).cls}`}>
+              <div
+                className={`state-pill ${settlementPill(data.settlement.phase).cls}`}
+              >
                 <span className="label">Settlement state</span>
                 <span className="value">
-                  <Dot state={settlementPill(data.settlement).dot} />
-                  {describeSettlementOutcome(data.settlement)}
+                  <Dot state={settlementPill(data.settlement.phase).dot} />
+                  {data.settlement.text}
                 </span>
               </div>
             </div>
           ) : null}
 
           <div className="intent__timeline">
-            {STEP_ORDER.filter(
-              ({ key }) => key !== "permit" || stepsByKey.has("permit")
-            ).map(({ key, label }) => {
-              const step = stepsByKey.get(key);
-              const isLast =
-                step &&
-                lifecycle.steps[lifecycle.steps.length - 1]?.key === key &&
-                lifecycle.endedAt === null;
-              const duration = durationByKey.get(key);
-              const cls = step
-                ? step.ok === false
-                  ? "intent__step is-err"
-                  : isLast
-                    ? "intent__step is-active"
-                    : "intent__step is-done"
-                : "intent__step";
-              return (
-                <div className={cls} key={key}>
-                  <span className="glyph">
-                    {step ? (step.ok === false ? "●" : "●") : "·"}
-                  </span>
-                  <span className="when">
-                    {duration !== undefined ? fmtMs(duration) : "—"}
-                  </span>
-                  <span className="what">{step?.label ?? label}</span>
-                  <span className="extra">
-                    {step?.tx ? shortHash(step.tx) : step?.detail ?? ""}
-                  </span>
-                </div>
-              );
-            })}
+            {stepOrder
+              .filter(({ key }) => key !== "permit" || stepsByKey.has("permit"))
+              .map(({ key, label }) => {
+                const step = stepsByKey.get(key);
+                const isLast =
+                  step &&
+                  lifecycle.steps[lifecycle.steps.length - 1]?.key === key &&
+                  lifecycle.endedAt === null;
+                const duration = durationByKey.get(key);
+                const cls = step
+                  ? step.ok === false
+                    ? "intent__step is-err"
+                    : isLast
+                      ? "intent__step is-active"
+                      : "intent__step is-done"
+                  : "intent__step";
+                return (
+                  <div className={cls} key={key}>
+                    <span className="glyph">
+                      {step ? (step.ok === false ? "●" : "●") : "·"}
+                    </span>
+                    <span className="when">
+                      {duration !== undefined ? fmtMs(duration) : "—"}
+                    </span>
+                    <span className="what">{step?.label ?? label}</span>
+                    <span className="extra">
+                      {step?.tx ? shortHash(step.tx) : step?.detail ?? ""}
+                    </span>
+                  </div>
+                );
+              })}
           </div>
         </div>
       )}

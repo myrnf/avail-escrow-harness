@@ -1,4 +1,5 @@
 import type { Address, Hex } from "viem";
+import type { Venue } from "../../config/networks";
 
 // ─────────────────────────────────────────────────────────────────────────
 // POST /intent
@@ -13,8 +14,18 @@ export interface CreateIntentRequest {
   /** Optional: the gross expected output before slippage. Free telemetry for Avail. */
   amount_out_quote?: string | null;
   client_intent_id?: string | null;
-  /** EIP-2612 permit blob, hex-encoded. Spec limit 2000 chars. */
+  /** EIP-2612 permit blob, hex-encoded. Spec limit 2000 chars. KALQIX only. */
   permit?: string | null;
+  // ── Multi-venue fields (v2 envs only). OMIT entirely — not null — on the
+  // legacy mainnet backend, which may reject unknown keys.
+  /** Executing venue; the backend defaults to KALQIX when omitted. */
+  venue?: Venue;
+  /** REQUIRED for KYBERSWAP: `{ routeSummary }` passed back verbatim from the
+   *  /v2/quote venue_detail — same object reference, never rebuilt. */
+  venue_detail?: { routeSummary?: unknown } | null;
+  /** REQUIRED for KYBERSWAP: the tx sender + output recipient. Must equal the
+   *  connected wallet that will send the router tx. Ignored for KALQIX. */
+  user_wallet?: Address | null;
 }
 
 /** Avail Escrow `/intent` error codes (OpenAPI enum). String widened with
@@ -33,11 +44,19 @@ export type IntentErrorCode =
   | "NO_MARKET_FOUND"
   | "MIN_QTY_VIOLATION"
   | "TICK_SIZE_VIOLATION"
+  | "STEP_SIZE_VIOLATION"
+  | "MIN_TRADE_VIOLATION"
+  | "MAX_TRADE_VIOLATION"
   | "INTERNAL_ERROR"
+  | "INTERNAL_SERVER_ERROR"
   | "TOKEN_IN_NOT_SUPPORTED"
   | "TOKEN_OUT_NOT_SUPPORTED"
   | "AMOUNT_IN_BELOW_MIN_AMOUNT"
   | "AMOUNT_IN_ABOVE_MAX_AMOUNT"
+  | "BAD_VENUE"
+  | "BAD_VENUE_DETAIL"
+  | "BAD_USER_WALLET"
+  | "SERVICE_UNAVAILABLE"
   | (string & {});
 
 /** Canonical (post-spec-v0.1.0) flat response shape. Same schema is returned
@@ -47,16 +66,22 @@ export interface CreateIntentResponse {
   encoded_calldata: Hex | null;
   contract_address: Address | null;
   solver_address: Address | null;
+  transaction_value: string | null;
   error_code: IntentErrorCode | null;
   error_message: string | null;
 }
 
-/** Narrowed success-only view exposed to callers. */
+/** Narrowed success-only view exposed to callers.
+ *  KALQIX: contract_address = escrow, solver_address set, transaction_value
+ *  null. KYBERSWAP: contract_address = Kyber router, solver_address null,
+ *  transaction_value = native value string to send with the router tx. */
 export interface CreateIntentSuccess {
   id: string;
   encoded_calldata: Hex;
   contract_address: Address;
-  solver_address: Address;
+  solver_address: Address | null;
+  /** Optional: legacy envelope responses don't carry it at all. */
+  transaction_value?: string | null;
 }
 
 // ── Legacy wrapped envelope (canary on the older deployment may still emit this).
