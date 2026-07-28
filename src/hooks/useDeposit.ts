@@ -10,7 +10,20 @@ interface DepositArgs {
   value?: bigint;
 }
 
-export function useDeposit() {
+interface SendCallLabels {
+  sent: string;
+  confirmed: string;
+}
+
+/** Generic raw-calldata sender + receipt watcher. Defaults to the escrow
+ *  deposit wording; the KYBERSWAP router path reuses it with its own labels
+ *  (pass static strings — labels aren't tracked as effect deps). */
+export function useDeposit(
+  labels: SendCallLabels = {
+    sent: "deposit() sent",
+    confirmed: "IntentDeposited confirmed",
+  }
+) {
   const log = useActivityLog((s) => s.push);
   const send = useSendTransaction();
   const receipt = useWaitForTransactionReceipt({ hash: send.data });
@@ -20,7 +33,7 @@ export function useDeposit() {
       log({
         level: "info",
         channel: "TX",
-        message: `deposit() sent · ${shortAddress(send.data)}`,
+        message: `${labels.sent} · ${shortAddress(send.data)}`,
       });
     }
   }, [send.data, log]);
@@ -30,7 +43,7 @@ export function useDeposit() {
       log({
         level: "ok",
         channel: "EVT",
-        message: `IntentDeposited confirmed · ${shortAddress(send.data)}`,
+        message: `${labels.confirmed} · ${shortAddress(send.data)}`,
       });
     }
   }, [receipt.isSuccess, send.data, log]);
@@ -43,6 +56,7 @@ export function useDeposit() {
         value: args.value ?? 0n,
       }),
     txHash: send.data,
+    receipt: receipt.data,
     isPending: send.isPending || receipt.isLoading,
     isSuccess: receipt.isSuccess,
     error: send.error ?? receipt.error,

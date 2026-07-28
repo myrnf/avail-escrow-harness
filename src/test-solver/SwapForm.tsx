@@ -50,16 +50,19 @@ export function SwapForm() {
     slippageBps,
     enabled: amountIn > 0n && !session.isInFlight,
   });
+  // The multi-venue hook returns a quote set; this harness always trades the
+  // KalqiX leg regardless of which venue quotes best.
+  const q0 = quote.data?.quotes.find((q) => q.venue === "KALQIX") ?? null;
 
   // Refresh-tick countdown.
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    if (!quote.data) return;
+    if (!q0) return;
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
-  }, [quote.data?.fetchedAt]);
-  const secondsToRefresh = quote.data
-    ? Math.max(0, 5 - Math.floor((Date.now() - quote.data.fetchedAt) / 1000))
+  }, [q0?.fetchedAt]);
+  const secondsToRefresh = q0
+    ? Math.max(0, 5 - Math.floor((Date.now() - q0.fetchedAt) / 1000))
     : null;
 
   function flip() {
@@ -81,9 +84,9 @@ export function SwapForm() {
   }
 
   async function onConfirm() {
-    if (!quote.data) return;
+    if (!q0) return;
     const fresh = await quote.refetch();
-    const q = fresh.data ?? quote.data;
+    const q = fresh.data?.quotes.find((x) => x.venue === "KALQIX") ?? q0;
     await session.start({
       side: q.side,
       algo,
@@ -147,7 +150,7 @@ export function SwapForm() {
       status={
         session.isInFlight ? (
           <PanelStatus state="warn">Locked</PanelStatus>
-        ) : quote.data ? (
+        ) : q0 ? (
           <PanelStatus state="live">Live · {secondsToRefresh ?? 0}s</PanelStatus>
         ) : (
           <PanelStatus state="idle">Idle</PanelStatus>
@@ -202,9 +205,7 @@ export function SwapForm() {
           <div className="swap__legend">You receive</div>
           <input
             className="swap__amount"
-            value={
-              quote.data ? fmtAmount(quote.data.amountOut, outInfo.decimals) : ""
-            }
+            value={q0 ? fmtAmount(q0.amountOut, outInfo.decimals) : ""}
             placeholder="0.00"
             readOnly
             disabled={formDisabled}
@@ -219,10 +220,10 @@ export function SwapForm() {
       {/* Details */}
       <div className="swap__details">
         <div className="swap__line">
-          <span>{quote.data?.side === "BUY" ? "Best ask" : "Best bid"}</span>
+          <span>{q0?.side === "BUY" ? "Best ask" : "Best bid"}</span>
           <b className="num">
-            {quote.data
-              ? `${quote.data.priceHuman.toLocaleString(undefined, {
+            {q0
+              ? `${q0.priceHuman.toLocaleString(undefined, {
                   maximumFractionDigits: 2,
                 })} USDC / BTC`
               : "—"}
@@ -231,16 +232,16 @@ export function SwapForm() {
         <div className="swap__line">
           <span>Taker fee</span>
           <span className="num">
-            {quote.data?.takerFeeBps != null
-              ? `${(quote.data.takerFeeBps / 100).toFixed(2)} %`
+            {q0?.takerFeeBps != null
+              ? `${(q0.takerFeeBps / 100).toFixed(2)} %`
               : "—"}
           </span>
         </div>
         <div className="swap__line">
           <span>Min received</span>
           <b className="num">
-            {quote.data
-              ? `${fmtAmount(quote.data.amountOutMin, outInfo.decimals)} ${tokenOut}`
+            {q0
+              ? `${fmtAmount(q0.amountOutMin, outInfo.decimals)} ${tokenOut}`
               : "—"}
           </b>
         </div>
@@ -249,7 +250,7 @@ export function SwapForm() {
           <span className="num">
             {session.isInFlight
               ? "paused"
-              : quote.data
+              : q0
                 ? `in ${secondsToRefresh ?? 0}s`
                 : "—"}
           </span>

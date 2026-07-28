@@ -25,6 +25,9 @@ export interface KalqiXMarketPrice {
   ticker?: string;
 }
 
+import type { Address } from "viem";
+import type { Venue } from "../../config/networks";
+
 export type Side = "BUY" | "SELL";
 
 /**
@@ -47,4 +50,34 @@ export interface Quote {
   ticker: string;
   /** Wall-clock instant the underlying price was fetched. */
   fetchedAt: number;
+}
+
+/** A `Quote` bound to the venue that produced it. The one shape execution
+ *  code sees on every env — the legacy local path wraps its single KalqiX
+ *  quote into one of these. */
+export interface VenueQuote extends Quote {
+  venue: Venue;
+  /** Token-approval spender for this venue (KalqiX escrow or Kyber router). */
+  approvalAddress: Address;
+  /** The exact parsed `venue_detail` from /v2/quote — carried by reference so
+   *  routeSummary reaches POST /intent verbatim. null for KALQIX/legacy. */
+  venueDetail: { routeSummary?: unknown } | null;
+  /** JSON snapshot of routeSummary taken at parse time; the pre-submit
+   *  integrity assertion compares against it. */
+  routeSummaryJson: string | null;
+}
+
+/** A venue that returned an error instead of a quote. */
+export interface VenueFailure {
+  venue: Venue | (string & {});
+  code: string;
+  message: string | null;
+}
+
+/** Result of one quote fetch across all enabled venues, best-first. */
+export interface MultiQuote {
+  /** /v2/quote response id; null on the legacy local path. */
+  quoteId: string | null;
+  quotes: VenueQuote[];
+  failures: VenueFailure[];
 }

@@ -6,7 +6,7 @@ import { txExplorerUrl, type NetworkConfig } from "../config/networks";
 import { TOKEN_META, getToken } from "../config/tokens";
 import type { TokenInfo, TokenSymbol } from "../config/tokens";
 import { fmtAmount, shortHash } from "../lib/format";
-import type { IntentDetail, SettlementOutcome } from "../lib/intent";
+import type { IntentStatusView } from "../lib/intent";
 import type { Address } from "viem";
 
 interface Row {
@@ -16,23 +16,23 @@ interface Row {
   hint?: string | string[];
 }
 
-function settlementRows(s: SettlementOutcome): Row[] {
-  if (s.status === "SETTLED") {
+function settlementRows(s: IntentStatusView["settlement"]): Row[] {
+  if (s.phase === "settled") {
     const rows: Row[] = [];
-    if (s.approval_tx_hash) {
+    if (s.approvalTxHash) {
       rows.push({
         label: "Solver approval",
-        hash: s.approval_tx_hash,
+        hash: s.approvalTxHash,
         state: "ok",
         hint: "pre-settlement allowance",
       });
     }
-    if (s.tx_hash) {
+    if (s.txHash) {
       // Settlement is one atomic on-chain action with two effects — surface
       // both as a two-line hint under a single row.
       rows.push({
         label: "Settlement",
-        hash: s.tx_hash,
+        hash: s.txHash,
         state: "ok",
         hint: [
           "output token delivered to user",
@@ -42,11 +42,11 @@ function settlementRows(s: SettlementOutcome): Row[] {
     }
     return rows;
   }
-  if (s.status === "UNLOCKED" && s.tx_hash) {
+  if (s.phase === "unlocked" && s.txHash) {
     return [
       {
         label: "Refund",
-        hash: s.tx_hash,
+        hash: s.txHash,
         state: "warn",
         hint: "input asset returned to user",
       },
@@ -80,52 +80,50 @@ function fmtSignedPct(actual: bigint, baseline: bigint): string {
 }
 
 /** Post-settlement execution-quality view. Replaces the tx-row list when
- *  settlement.status === "SETTLED" — the input, the quoted-out we sent, the
- *  on-chain min floor, and what was actually delivered. The delta vs quote is
- *  the price-execution signal a tester cares about. */
+ *  settlement lands cleanly — the input, the quoted-out we sent, the on-chain
+ *  min floor, and what was actually delivered. The delta vs quote is the
+ *  price-execution signal a tester cares about. */
 function ExecutionView({
-  data,
+  view,
   network,
   depositTxHash,
   kyberAmountOut,
 }: {
-  data: IntentDetail;
+  view: IntentStatusView;
   network: NetworkConfig;
   depositTxHash: string | null;
   kyberAmountOut: string | null;
 }) {
-  const inputTok = tokenInfoByAddress(network, data.input.token_in);
-  const outputTok = tokenInfoByAddress(network, data.input.token_out);
+  const inputTok = tokenInfoByAddress(network, view.input.tokenIn);
+  const outputTok = tokenInfoByAddress(network, view.input.tokenOut);
 
   const inputDecimals = inputTok?.decimals ?? 18;
   const inputSymbol = inputTok?.symbol ?? "—";
 
-  // Output: prefer server-provided decimals/symbol from order outcome; fall
-  // back to local TokenInfo for the input symbol/decimals.
+  // Output: prefer server-provided decimals/symbol (v1 poller only); the v2
+  // shape has none, so fall back to the local token registry — total for the
+  // harness's USDC/cbBTC/ETH set.
   const outputDecimals =
-    data.order.amount_out_decimals ?? outputTok?.decimals ?? 18;
-  const outputSymbol =
-    data.order.amount_out_symbol ?? outputTok?.symbol ?? "—";
+    view.trade.amountOutDecimals ?? outputTok?.decimals ?? 18;
+  const outputSymbol = view.trade.amountOutSymbol ?? outputTok?.symbol ?? "—";
 
-  const amountIn = BigInt(data.input.amount_in);
-  const amountOutMin = BigInt(data.input.amount_out);
-  const amountOutQuote = data.input.amount_out_quote
-    ? BigInt(data.input.amount_out_quote)
+  const amountIn = BigInt(view.input.amountIn);
+  const amountOutMin = BigInt(view.input.amountOutMin);
+  const amountOutQuote = view.input.amountOutQuote
+    ? BigInt(view.input.amountOutQuote)
     : null;
-  // Prefer settlement.amount_out (what the contract recorded as delivered).
-  // Fall back to order.amount_out if for some reason settlement is missing it.
-  const amountActual = data.settlement.amount_out
-    ? BigInt(data.settlement.amount_out)
-    : data.order.amount_out
-      ? BigInt(data.order.amount_out)
+  // Prefer the settlement amount (what the contract recorded as delivered).
+  // Fall back to the trade amount if settlement is missing it.
+  const amountActual = view.settlement.amount
+    ? BigInt(view.settlement.amount)
+    : view.trade.amountOut
+      ? BigInt(view.trade.amountOut)
       : null;
 
   const kyberOut = kyberAmountOut ? BigInt(kyberAmountOut) : null;
 
   const vsMin =
-    amountActual !== null
-      ? fmtSignedPct(amountActual, amountOutMin)
-      : null;
+    amountActual !== null ? fmtSignedPct(amountActual, amountOutMin) : null;
   const vsQuote =
     amountActual !== null && amountOutQuote !== null
       ? fmtSignedPct(amountActual, amountOutQuote)
@@ -210,7 +208,7 @@ function ExecutionView({
           ) : null}
         </div>
       ) : null}
-      {(depositTxHash || data.settlement.tx_hash) ? (
+      {(depositTxHash || view.settlement.txHash) ? (
         <div className="exec__txlinks">
           {depositTxHash ? (
             <a
@@ -222,14 +220,14 @@ function ExecutionView({
               ↗ deposit · {shortHash(depositTxHash)}
             </a>
           ) : null}
-          {data.settlement.tx_hash ? (
+          {view.settlement.txHash ? (
             <a
               className="exec__txlink"
-              href={txExplorerUrl(network, data.settlement.tx_hash)}
+              href={txExplorerUrl(network, view.settlement.txHash)}
               target="_blank"
               rel="noopener noreferrer"
             >
-              ↗ settlement · {shortHash(data.settlement.tx_hash)}
+              ↗ settlement · {shortHash(view.settlement.txHash)}
             </a>
           ) : null}
         </div>
@@ -240,7 +238,9 @@ function ExecutionView({
 
 export function TransactionsPanel() {
   const lifecycle = useCurrentLifecycle();
-  const status = useIntentStatus(lifecycle.intentId);
+  const isKyber = lifecycle.venue === "KYBERSWAP";
+  // KYBERSWAP swaps have no backend lifecycle — never poll for them.
+  const status = useIntentStatus(isKyber ? null : lifecycle.intentId);
   const network = useActiveNetwork();
   const data = status.data;
 
@@ -253,14 +253,14 @@ export function TransactionsPanel() {
 
   // Repurpose the panel to a price-execution view once the swap has settled
   // cleanly. Refund and failure terminal states keep the original tx-row view.
-  if (data && data.settlement.status === "SETTLED") {
+  if (data && data.settlement.phase === "settled") {
     return (
       <Panel
         title="Execution"
         status={<PanelStatus state="ok">Settled</PanelStatus>}
       >
         <ExecutionView
-          data={data}
+          view={data}
           network={network}
           depositTxHash={depositTxHash}
           kyberAmountOut={lifecycle.kyberAmountOut}
@@ -271,7 +271,7 @@ export function TransactionsPanel() {
 
   const rows: Row[] = [];
 
-  // Deposit (user) — known as soon as deposit broadcasts.
+  // Deposit (user) — known as soon as deposit broadcasts. KALQIX only.
   if (depositTxHash) {
     const confirmed = lifecycle.steps.some((s) => s.key === "deposited");
     rows.push({
@@ -279,6 +279,29 @@ export function TransactionsPanel() {
       hash: depositTxHash,
       state: confirmed ? "ok" : "live",
       hint: confirmed ? "input locked in escrow" : "broadcasting…",
+    });
+  }
+
+  // KYBERSWAP: the router tx is the whole swap — one row, receipt-terminal.
+  const routerTxHash =
+    lifecycle.steps.find(
+      (s) => s.key === "routerTx" || s.key === "routerConfirmed"
+    )?.tx ?? null;
+  if (routerTxHash) {
+    const confirmedStep = lifecycle.steps.find(
+      (s) => s.key === "routerConfirmed"
+    );
+    rows.push({
+      label: "Router swap",
+      hash: routerTxHash,
+      state: confirmedStep ? (confirmedStep.ok ? "ok" : "err") : "live",
+      hint: confirmedStep
+        ? confirmedStep.ok
+          ? lifecycle.actualAmountOut
+            ? `received ${lifecycle.actualAmountOut}`
+            : "confirmed"
+          : "reverted"
+        : "broadcasting…",
     });
   }
 
