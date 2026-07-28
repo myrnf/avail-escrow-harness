@@ -10,6 +10,7 @@ import {
   DEFAULT_SLIPPAGE_BPS,
   SLIPPAGE_PRESETS_BPS,
   QUOTE_TTL_MS,
+  KYBERSWAP_TOKEN_ALLOWLIST,
 } from "../config/avail";
 import { venueEnabled, type Venue } from "../config/networks";
 import { useQuote } from "../hooks/useQuote";
@@ -72,16 +73,30 @@ export function SwapForm({ isInFlight }: Props) {
 
   const balance = useInputBalance(inInfo, address);
 
-  // Per-venue supported-token limits: a violated venue is excluded from the
-  // quote and rendered as a disabled card with the reason, instead of letting
-  // its quote fail server-side.
+  // A venue is unavailable when the app-side token allowlist excludes the
+  // pair (KYBERSWAP quotes any token and enforces no supported-token checks —
+  // the app owns that policy) or when amount_in is outside the venue's
+  // /supported-token limits. Either way the venue is excluded from the quote
+  // and rendered as a disabled card with the reason, instead of letting it
+  // fail server-side.
   const supported = useSupportedTokens();
-  const venueStates = (network.venues ?? []).map((v) => ({
-    venue: v,
-    violation: supported.violation(v, inInfo.address, amountIn),
-  }));
+  const kyberPairAllowed =
+    (KYBERSWAP_TOKEN_ALLOWLIST as readonly string[]).includes(tokenIn) &&
+    (KYBERSWAP_TOKEN_ALLOWLIST as readonly string[]).includes(tokenOut);
+  const venueStates = (network.venues ?? []).map((venue) => {
+    let reason: string | null = null;
+    if (venue === "KYBERSWAP" && !kyberPairAllowed) {
+      reason = "ETH pairs not routed via KyberSwap";
+    } else {
+      const violation = supported.violation(venue, inInfo.address, amountIn);
+      if (violation) {
+        reason = `${violation.kind === "below_min" ? "below venue min" : "above venue max"} · ${fmtAmount(violation.limit, inInfo.decimals, { minDp: 0 })} ${tokenIn}`;
+      }
+    }
+    return { venue, reason };
+  });
   const allowedVenues = venueStates
-    .filter((s) => !s.violation)
+    .filter((s) => !s.reason)
     .map((s) => s.venue);
 
   const quote = useQuote({
@@ -642,11 +657,8 @@ export function SwapForm({ isInFlight }: Props) {
         const vq = quotes.find((q) => q.venue === v) ?? null;
         const failure =
           quote.data?.failures.find((f) => f.venue === v) ?? null;
-        const violation =
-          venueStates.find((s) => s.venue === v)?.violation ?? null;
-        const limitReason = violation
-          ? `${violation.kind === "below_min" ? "below venue min" : "above venue max"} · ${fmtAmount(violation.limit, inInfo.decimals, { minDp: 0 })} ${tokenIn}`
-          : null;
+        const limitReason =
+          venueStates.find((s) => s.venue === v)?.reason ?? null;
         return {
           venue: v,
           quote: vq,
