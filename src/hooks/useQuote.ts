@@ -122,6 +122,7 @@ export function useQuote({
           tokenOut: outInfo.address,
           amountIn,
           slippageBps,
+          whitelistedVenues: allowedVenues,
         });
         log({
           level: "info",
@@ -139,9 +140,9 @@ export function useQuote({
 
         const quotes: VenueQuote[] = [];
         const failures: VenueFailure[] = [];
-        // The backend quotes every venue it knows (whitelisted_venues is
-        // unusable server-side — see getAvailQuoteV2); restrict to this
-        // env's enabled venues here.
+        // Belt-and-braces: the whitelist param is sent, but the live backend
+        // doesn't filter on it yet (see getAvailQuoteV2) — restrict to this
+        // env's enabled venues here regardless.
         const allowed = new Set<string>(allowedVenues);
         for (const v of resp.quotes ?? []) {
           if (!allowed.has(v.venue_name)) continue;

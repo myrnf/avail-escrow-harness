@@ -63,6 +63,7 @@ interface Params {
   tokenOut: Address;
   amountIn: bigint;
   slippageBps: number;
+  whitelistedVenues: Venue[];
 }
 
 /**
@@ -70,14 +71,16 @@ interface Params {
  * called directly from the browser. Addresses are lowercased to match Avail's
  * case-sensitive asset registry (same as the intent client).
  *
- * `whitelisted_venues` is deliberately NOT sent: the live backend rejects
- * every string encoding of it ("expected a sequence" — an axum Query/Vec
- * limitation) and silently ignores bracket forms, so venue filtering happens
- * client-side against NetworkConfig.venues instead.
+ * `whitelisted_venues` uses ARRAY-BRACKET encoding (`whitelisted_venues[]=`)
+ * per the confirmed contract — plain string repetition is rejected with
+ * "expected a sequence". NOTE (verified live 2026-07-28 on both envs): the
+ * bracket form parses but the backend does not yet actually filter on it, so
+ * the caller must still filter the response client-side against
+ * NetworkConfig.venues.
  */
 export async function getAvailQuoteV2(
   baseUrl: string,
-  { tokenIn, tokenOut, amountIn, slippageBps }: Params
+  { tokenIn, tokenOut, amountIn, slippageBps, whitelistedVenues }: Params
 ): Promise<AvailQuoteV2Response> {
   const params = new URLSearchParams({
     token_in: tokenIn.toLowerCase(),
@@ -85,6 +88,9 @@ export async function getAvailQuoteV2(
     amount_in: amountIn.toString(),
     slippage_bps: String(slippageBps),
   });
+  for (const v of whitelistedVenues) {
+    params.append("whitelisted_venues[]", v);
+  }
   const res = await fetch(`${baseUrl.replace(/\/$/, "")}/v2/quote?${params}`);
   const text = await res.text();
   let body: AvailQuoteV2Response;
