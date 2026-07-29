@@ -19,26 +19,6 @@ export class QuoteValidationError extends Error {
 }
 
 /**
- * Display price in USDC per whole unit of the non-USDC leg, derived from the
- * two amounts — the quote APIs return no price field. USDC is always the
- * quote leg, so whichever side isn't USDC is the base.
- */
-export function impliedUsdcPrice(args: {
-  tokenInIsUsdc: boolean;
-  amountIn: bigint;
-  amountOut: bigint;
-  inDecimals: number;
-  outDecimals: number;
-}): number {
-  const { tokenInIsUsdc, amountIn, amountOut, inDecimals, outDecimals } = args;
-  const usdcAmt = tokenInIsUsdc ? amountIn : amountOut;
-  const baseAmt = tokenInIsUsdc ? amountOut : amountIn;
-  const baseDecimals = tokenInIsUsdc ? outDecimals : inDecimals;
-  const baseHuman = Number(baseAmt) / 10 ** baseDecimals;
-  return baseHuman > 0 ? Number(usdcAmt) / 1e6 / baseHuman : 0;
-}
-
-/**
  * KalqiX returns `step_size` and `tick_size` as decimal strings in **human
  * units** (e.g. "0.0001" BTC, "0.01" USDC/BTC). Convert to base units.
  *
