@@ -71,12 +71,21 @@ interface Params {
  * called directly from the browser. Addresses are lowercased to match Avail's
  * case-sensitive asset registry (same as the intent client).
  *
- * `whitelisted_venues` uses ARRAY-BRACKET encoding (`whitelisted_venues[]=`)
- * per the confirmed contract — plain string repetition is rejected with
- * "expected a sequence". NOTE (verified live 2026-07-28 on both envs): the
- * bracket form parses but the backend does not yet actually filter on it, so
- * the caller must still filter the response client-side against
- * NetworkConfig.venues.
+ * `whitelisted_venues` is sent bracket-encoded, but is currently INERT — the
+ * deployed handler deserializes its query string with serde_urlencoded
+ * (plain axum `Query`), which cannot build sequences from a query string at
+ * all: single and repeated `whitelisted_venues=KALQIX` both 400 with
+ * "expected a sequence", while bracket keys are silently dropped as unknown
+ * params (an *invalid* venue in bracket form is accepted without error —
+ * verified on canary 2026-07-29; scalars like slippage_bps are honored, so
+ * it's the sequence handling specifically). Bracket form is kept only
+ * because it's the one encoding that doesn't 400. Venue filtering therefore
+ * happens client-side against NetworkConfig.venues.
+ *
+ * When the backend switches deserializer, match whatever it then accepts:
+ * axum_extra `Query`/serde_html_form → repeated plain keys; serde_qs →
+ * brackets. Same limitation blocks `venue_options`, which is why
+ * source-restricted routing is fetched from Kyber directly.
  */
 export async function getAvailQuoteV2(
   baseUrl: string,
