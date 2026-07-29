@@ -58,11 +58,12 @@ export interface AvailQuoteV2Response {
   error_message: string | null;
 }
 
-/** Per-venue route-discovery options (`venue_options` in the spec). Only the
- *  KYBERSWAP fields we use are modelled; fee fields are server-controlled and
- *  rejected by the API, so they're deliberately absent. */
+/** Route-discovery options for one venue (`venue_options` in the spec, which
+ *  caps the array at a single entry). Only the KYBERSWAP fields we use are
+ *  modelled; fee fields are server-controlled and rejected by the API, so
+ *  they're deliberately absent. */
 export interface VenueQuoteOption {
-  name: Venue;
+  venue: Venue;
   /** Kyber source (dex) ids to route through exclusively. */
   includedSources?: string[];
 }
@@ -73,72 +74,99 @@ interface Params {
   amountIn: bigint;
   slippageBps: number;
   whitelistedVenues: Venue[];
-  venueOptions?: VenueQuoteOption[];
+  venueOption?: VenueQuoteOption;
+}
+
+/** Query-string form of the request, for envs still on the pre-POST build.
+ *  TRANSITIONAL — delete once every env serves POST /v2/quote. */
+function legacyQuoteUrl(baseUrl: string, p: Params): string {
+  const parts = [
+    `token_in=${p.tokenIn.toLowerCase()}`,
+    `token_out=${p.tokenOut.toLowerCase()}`,
+    `amount_in=${p.amountIn.toString()}`,
+    `slippage_bps=${p.slippageBps}`,
+  ];
+  // Array params never worked on that build (its query deserializer can't
+  // build sequences), so they're omitted here rather than sent uselessly —
+  // callers filter venues client-side. Source restriction is simply
+  // unavailable until the env serves POST.
+  return `${baseUrl.replace(/\/$/, "")}/v2/quote?${parts.join("&")}`;
 }
 
 /**
- * Fetch a multi-venue quote from Avail's GET /v2/quote. CORS-open like v1, so
- * called directly from the browser. Addresses are lowercased to match Avail's
- * case-sensitive asset registry (same as the intent client).
+ * Request multi-venue quotes from Avail's POST /v2/quote. CORS-open and
+ * preflight-enabled, so it's called directly from the browser. Addresses are
+ * lowercased to match Avail's case-sensitive asset registry (same as the
+ * intent client).
  *
- * The two array params (`whitelisted_venues`, `venue_options`) are sent with
- * literal-bracket, serde_qs-style keys — the only shape that doesn't 400 on
- * the deployed build. Brackets are left unencoded on purpose: URLSearchParams
- * would percent-encode them to %5B/%5D, which the server reads as part of the
- * key name.
+ * A JSON body is what makes `whitelisted_venues` and `venue_options` usable
+ * at all — the endpoint took query params until 2026-07-29, and that build's
+ * deserializer could not construct sequences from a query string under any
+ * encoding, so both array params were silently unreachable.
  *
- * KNOWN GAP (canary + testnet, verified 2026-07-29): neither array param
- * reaches the handler on the deployed build. Non-bracketed values 400 with
- * "invalid type: string, expected a sequence"; bracketed values are dropped
- * silently — `whitelisted_venues[]=HELLO` returns 200 instead of the spec's
- * BAD_WHITELISTED_VENUES, and a bogus venue_options field returns 200 despite
- * `additionalProperties: false`. Scalars (slippage_bps) parse fine and JSON
- * bodies handle arrays fine, so it's query-string sequences specifically.
- * Callers must therefore verify the response rather than trust the request:
- * see honorsSources() for the KYBERSWAP route check, and the client-side
- * venue filter in useQuote. Both become no-ops once the params take effect.
+ * Body stays well inside the server's 512-byte limit (~310 bytes at our
+ * largest, with both venues whitelisted and two included_sources). A long
+ * source list is the only realistic way to exceed it — mind that before
+ * adding more.
+ *
+ * If an env still serves the older GET build it answers 405; we retry there
+ * as a query request so quoting keeps working (without the array params,
+ * which never functioned on it anyway). Delete that path once every env is
+ * on POST.
  */
 export async function getAvailQuoteV2(
   baseUrl: string,
-  {
+  params: Params
+): Promise<AvailQuoteV2Response> {
+  const {
     tokenIn,
     tokenOut,
     amountIn,
     slippageBps,
     whitelistedVenues,
-    venueOptions,
-  }: Params
-): Promise<AvailQuoteV2Response> {
-  const parts = [
-    `token_in=${tokenIn.toLowerCase()}`,
-    `token_out=${tokenOut.toLowerCase()}`,
-    `amount_in=${amountIn.toString()}`,
-    `slippage_bps=${slippageBps}`,
-  ];
-  whitelistedVenues.forEach((v) => parts.push(`whitelisted_venues[]=${v}`));
-  venueOptions?.forEach((vo, i) => {
-    parts.push(`venue_options[${i}][name]=${vo.name}`);
-    vo.includedSources?.forEach((s, j) =>
-      parts.push(
-        `venue_options[${i}][option][included_sources][${j}]=${encodeURIComponent(s)}`
-      )
-    );
+    venueOption,
+  } = params;
+  const body = {
+    token_in: tokenIn.toLowerCase(),
+    token_out: tokenOut.toLowerCase(),
+    amount_in: amountIn.toString(),
+    slippage_bps: slippageBps,
+    // null (not []) means "all venues" per the spec; an empty allowlist would
+    // be a request for nothing.
+    whitelisted_venues: whitelistedVenues.length ? whitelistedVenues : null,
+    venue_options: venueOption
+      ? [
+          {
+            venue_name: venueOption.venue,
+            option: venueOption.includedSources?.length
+              ? { included_sources: venueOption.includedSources }
+              : null,
+          },
+        ]
+      : null,
+  };
+  let res = await fetch(`${baseUrl.replace(/\/$/, "")}/v2/quote`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
-  const res = await fetch(
-    `${baseUrl.replace(/\/$/, "")}/v2/quote?${parts.join("&")}`
-  );
+  if (res.status === 405) {
+    res = await fetch(legacyQuoteUrl(baseUrl, params));
+  }
   const text = await res.text();
-  let body: AvailQuoteV2Response;
+  let parsed: AvailQuoteV2Response;
   try {
-    // Both success and request-level errors come back as JSON (with
-    // error_code); the caller inspects error_code / quotes.
-    body = JSON.parse(text) as AvailQuoteV2Response;
+    // Quote-level and request-level failures come back as JSON carrying
+    // error_code; the caller inspects error_code / quotes. Malformed-request
+    // statuses (413 body too large, 415 wrong content-type, 422 bad shape,
+    // and JSON-syntax 400s) answer in text/plain and land in the catch.
+    parsed = JSON.parse(text) as AvailQuoteV2Response;
   } catch {
     if (res.status === 503) throw new ServiceUnavailableError();
     throw new Error(`/v2/quote ${res.status}: ${text.slice(0, 160)}`);
   }
-  if (res.status === 503 || body.error_code === "SERVICE_UNAVAILABLE") {
-    throw new ServiceUnavailableError(body.error_message ?? undefined);
+  if (res.status === 503 || parsed.error_code === "SERVICE_UNAVAILABLE") {
+    throw new ServiceUnavailableError(parsed.error_message ?? undefined);
   }
-  return body;
+  return parsed;
 }
