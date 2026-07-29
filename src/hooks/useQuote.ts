@@ -1,12 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { getMarket, getMarketPrice, quoteSwap } from "../lib/quote";
-import { rawPriceFromMarketPrice, QuoteValidationError } from "../lib/quote/calc";
+import {
+  rawPriceFromMarketPrice,
+  impliedUsdcPrice,
+  QuoteValidationError,
+} from "../lib/quote/calc";
 import {
   getAvailQuoteV2,
   type AvailQuoteVenueV2,
 } from "../lib/quote/apiClient";
 import type { MultiQuote, VenueFailure, VenueQuote } from "../lib/quote/types";
+import { fetchRestrictedKyberQuote } from "../lib/quote/restrictedKyber";
 import { routeFor } from "../config/kalqix";
 import { getToken, type TokenSymbol } from "../config/tokens";
 import type { Venue } from "../config/networks";
@@ -57,6 +62,10 @@ interface QuoteArgs {
    *  caller). Ignored on the legacy local path. Defaults to the network's
    *  configured venues. */
   venues?: Venue[];
+  /** Restrict KYBERSWAP routing to this network's QuickSwap pools, to
+   *  reproduce what a QuickSwap user would be quoted and execute against.
+   *  Ignored where the network defines no `quickswapSources`. */
+  quickswapOnly?: boolean;
   enabled?: boolean;
 }
 
@@ -66,6 +75,7 @@ export function useQuote({
   amountIn,
   slippageBps,
   venues,
+  quickswapOnly = false,
   enabled = true,
 }: QuoteArgs) {
   const network = useActiveNetwork();
@@ -99,6 +109,7 @@ export function useQuote({
       tokenOut,
       amountIn.toString(),
       slippageBps,
+      quickswapOnly,
     ],
     enabled:
       enabled &&
@@ -116,20 +127,57 @@ export function useQuote({
 
       // ---- Avail /v2/quote path (multi-venue, service owns the math) ----
       if (v2) {
+        // QuickSwap-only mode sources the KYBERSWAP leg client-side (see
+        // restrictedKyber.ts); the backend's own Kyber quote is discarded
+        // for that venue. KALQIX is unaffected either way.
+        const restrictTo =
+          quickswapOnly &&
+          allowedVenues.includes("KYBERSWAP") &&
+          network.kyberChainSlug
+            ? network.quickswapSources
+            : undefined;
+
         const t0 = performance.now();
-        const resp = await getAvailQuoteV2(network.availEscrowBaseUrl, {
-          tokenIn: inInfo.address,
-          tokenOut: outInfo.address,
-          amountIn,
-          slippageBps,
-          whitelistedVenues: allowedVenues,
-        });
+        const [resp, restricted] = await Promise.all([
+          getAvailQuoteV2(network.availEscrowBaseUrl, {
+            tokenIn: inInfo.address,
+            tokenOut: outInfo.address,
+            amountIn,
+            slippageBps,
+            whitelistedVenues: allowedVenues,
+          }),
+          restrictTo?.length
+            ? fetchRestrictedKyberQuote({
+                chainSlug: network.kyberChainSlug!,
+                sources: restrictTo,
+                tokenIn: inInfo.address,
+                tokenOut: outInfo.address,
+                tokenInIsUsdc: tokenIn === "USDC",
+                amountIn,
+                slippageBps,
+                inDecimals: inInfo.decimals,
+                outDecimals: outInfo.decimals,
+                side: route.side,
+                ticker: route.ticker,
+              })
+            : null,
+        ]);
         log({
           level: "info",
           channel: "API",
           message: `GET /v2/quote ${tokenIn}→${tokenOut} · ${resp.error_code ?? "200"}`,
           details: `${Math.round(performance.now() - t0)}ms`,
         });
+        if (restricted) {
+          log({
+            level: "info",
+            channel: "QUOTE",
+            message:
+              "quote" in restricted
+                ? `QuickSwap-only route · ${restricted.quote.amountOut} ${tokenOut}`
+                : `QuickSwap-only route unavailable · ${restricted.failure.message ?? restricted.failure.code}`,
+          });
+        }
         if (resp.error_code) {
           const msg = resp.error_message || resp.error_code;
           if (VALIDATION_ERROR_CODES.has(resp.error_code)) {
@@ -146,6 +194,9 @@ export function useQuote({
         const allowed = new Set<string>(allowedVenues);
         for (const v of resp.quotes ?? []) {
           if (!allowed.has(v.venue_name)) continue;
+          // In QuickSwap-only mode the client-fetched route replaces the
+          // backend's unrestricted Kyber quote entirely.
+          if (restricted && v.venue_name === "KYBERSWAP") continue;
           const parsed = parseVenueQuote(v, {
             userAmountIn: amountIn,
             slippageBps,
@@ -158,11 +209,18 @@ export function useQuote({
           if ("failure" in parsed) failures.push(parsed.failure);
           else quotes.push(parsed.quote);
         }
+        if (restricted) {
+          if ("failure" in restricted) failures.push(restricted.failure);
+          else quotes.push(restricted.quote);
+        }
         if (quotes.length === 0 && failures.length === 0) {
           throw new QuoteValidationError("No route available for this pair.");
         }
-        // Server order is best-first; keep it. Failures render per-venue —
-        // an all-failed response is still data, not an exception.
+        // Best-first. The server already sorts, but a substituted
+        // QuickSwap-only quote lands out of order, so re-sort regardless.
+        quotes.sort((a, b) => (b.amountOut > a.amountOut ? 1 : -1));
+        // Failures render per-venue — an all-failed response is still data,
+        // not an exception.
         return { quoteId: resp.id, quotes, failures };
       }
 
@@ -259,14 +317,13 @@ function parseVenueQuote(
       ? BigInt(v.amount_out_min)
       : (amountOut * BigInt(10_000 - ctx.slippageBps)) / 10_000n;
 
-  // Derive a display price (USDC per base) from the amounts — the API
-  // returns no price field. USDC is always the quote leg.
-  const usdcAmt = ctx.tokenIn === "USDC" ? amountIn : amountOut;
-  const baseAmt = ctx.tokenIn === "USDC" ? amountOut : amountIn;
-  const baseDecimals =
-    ctx.tokenIn === "USDC" ? ctx.outDecimals : ctx.inDecimals;
-  const baseHuman = Number(baseAmt) / 10 ** baseDecimals;
-  const priceHuman = baseHuman > 0 ? Number(usdcAmt) / 1e6 / baseHuman : 0;
+  const priceHuman = impliedUsdcPrice({
+    tokenInIsUsdc: ctx.tokenIn === "USDC",
+    amountIn,
+    amountOut,
+    inDecimals: ctx.inDecimals,
+    outDecimals: ctx.outDecimals,
+  });
 
   return {
     quote: {
