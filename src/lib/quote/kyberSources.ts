@@ -11,7 +11,10 @@
  * dropped returns a perfectly valid best-route quote, which the UI would
  * otherwise label as restricted and the user would trade on. Checking the
  * route means a restricted quote is either genuinely restricted or visibly
- * failed — never quietly wrong.
+ * failed — never quietly wrong. (Not hypothetical: the pre-POST build
+ * discarded the parameter entirely.) It doubles as the acceptance test for
+ * source restriction — a KYBERSWAP card showing a QuickSwap quote means the
+ * option round-tripped.
  */
 
 /** Every distinct pool/dex id used across a routeSummary's hops. */
