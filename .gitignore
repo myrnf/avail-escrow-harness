@@ -11,3 +11,6 @@ dist-ssr
 .idea
 .claude
 *.log
+
+# Load-test wallet keys — NEVER commit
+scripts/loadtest/wallets.json

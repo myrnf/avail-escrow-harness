@@ -14,6 +14,9 @@ export interface VenueCardModel {
   isBest: boolean;
   ageSec: number | null;
   isStale: boolean;
+  /** Small caveat under the numbers, e.g. the KalqiX fee basis or an active
+   *  routing restriction. */
+  note: string | null;
 }
 
 /**
@@ -80,10 +83,8 @@ export function VenueQuoteCards({
                   })}{" "}
                   USDC / {pairedToken}
                 </span>
-                {m.venue === "KALQIX" ? (
-                  <span className="venue-card__note">
-                    net of KalqiX taker fee
-                  </span>
+                {m.note ? (
+                  <span className="venue-card__note">{m.note}</span>
                 ) : null}
               </>
             ) : (

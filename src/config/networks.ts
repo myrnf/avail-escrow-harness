@@ -50,6 +50,10 @@ export interface NetworkConfig {
   /** KyberSwap aggregator chain slug for the benchmark quote, or undefined if
    *  Kyber has no coverage (e.g. Base Sepolia testnet). Base mainnet = "base". */
   kyberChainSlug?: string;
+  /** KyberSwap dex ids for QuickSwap's pools on this chain, powering the
+   *  QuickSwap-only routing mode. Base exposes `quickswap` + `quickswap-v4`
+   *  (v3 is Polygon-only). Undefined → the mode isn't offered here. */
+  quickswapSources?: string[];
   /** Venues the multi-venue backend serves on this env. Present → the app
    *  uses GET /v2/quote, venue-aware POST /intent, GET /v2/intent/{id} and
    *  GET /supported-token. ABSENT → legacy path: local KalqiX quoting plus
@@ -102,6 +106,7 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     kalqixMarketTickers: { cbBTC: "cbBTC_USDC", ETH: "ETH_USDC" },
     kyberChainSlug: "base",
+    quickswapSources: ["quickswap", "quickswap-v4"],
     venues: ["KALQIX", "KYBERSWAP"],
     availEscrowBaseUrl: "https://escrow-canary.availproject.org",
     tokens: {

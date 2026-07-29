@@ -7,6 +7,7 @@ import {
   type AvailQuoteVenueV2,
 } from "../lib/quote/apiClient";
 import type { MultiQuote, VenueFailure, VenueQuote } from "../lib/quote/types";
+import { disallowedExchanges } from "../lib/quote/kyberSources";
 import { routeFor } from "../config/kalqix";
 import { getToken, type TokenSymbol } from "../config/tokens";
 import type { Venue } from "../config/networks";
@@ -57,6 +58,10 @@ interface QuoteArgs {
    *  caller). Ignored on the legacy local path. Defaults to the network's
    *  configured venues. */
   venues?: Venue[];
+  /** Restrict KYBERSWAP routing to this network's QuickSwap pools, to
+   *  reproduce what a QuickSwap user would be quoted and execute against.
+   *  Ignored where the network defines no `quickswapSources`. */
+  quickswapOnly?: boolean;
   enabled?: boolean;
 }
 
@@ -66,6 +71,7 @@ export function useQuote({
   amountIn,
   slippageBps,
   venues,
+  quickswapOnly = false,
   enabled = true,
 }: QuoteArgs) {
   const network = useActiveNetwork();
@@ -99,6 +105,7 @@ export function useQuote({
       tokenOut,
       amountIn.toString(),
       slippageBps,
+      quickswapOnly,
     ],
     enabled:
       enabled &&
@@ -116,6 +123,13 @@ export function useQuote({
 
       // ---- Avail /v2/quote path (multi-venue, service owns the math) ----
       if (v2) {
+        // QuickSwap-only mode asks the orchestrator to restrict Kyber's route
+        // discovery via venue_options. KALQIX is unaffected.
+        const restrictTo =
+          quickswapOnly && allowedVenues.includes("KYBERSWAP")
+            ? network.quickswapSources
+            : undefined;
+
         const t0 = performance.now();
         const resp = await getAvailQuoteV2(network.availEscrowBaseUrl, {
           tokenIn: inInfo.address,
@@ -123,6 +137,9 @@ export function useQuote({
           amountIn,
           slippageBps,
           whitelistedVenues: allowedVenues,
+          venueOptions: restrictTo?.length
+            ? [{ name: "KYBERSWAP", includedSources: restrictTo }]
+            : undefined,
         });
         log({
           level: "info",
@@ -155,14 +172,43 @@ export function useQuote({
             side: route.side,
             ticker: route.ticker,
           });
-          if ("failure" in parsed) failures.push(parsed.failure);
-          else quotes.push(parsed.quote);
+          if ("failure" in parsed) {
+            failures.push(parsed.failure);
+            continue;
+          }
+          // Trust the route, not the request: if we asked for restricted
+          // sources, the returned hops must actually be those sources. A
+          // dropped venue_options would otherwise surface as a normal
+          // best-route quote wearing a "QuickSwap only" label.
+          if (restrictTo?.length && parsed.quote.venue === "KYBERSWAP") {
+            const foreign = disallowedExchanges(
+              parsed.quote.venueDetail,
+              restrictTo
+            );
+            if (foreign.length > 0) {
+              log({
+                level: "warn",
+                channel: "QUOTE",
+                message: `venue_options ignored — route used ${foreign.join(", ")}`,
+              });
+              failures.push({
+                venue: "KYBERSWAP",
+                code: "SOURCES_NOT_APPLIED",
+                message: `Route used ${foreign.join(", ")} — venue not restricted to QuickSwap.`,
+              });
+              continue;
+            }
+          }
+          quotes.push(parsed.quote);
         }
         if (quotes.length === 0 && failures.length === 0) {
           throw new QuoteValidationError("No route available for this pair.");
         }
-        // Server order is best-first; keep it. Failures render per-venue —
-        // an all-failed response is still data, not an exception.
+        // Best-first. The server already sorts, but a substituted
+        // QuickSwap-only quote lands out of order, so re-sort regardless.
+        quotes.sort((a, b) => (b.amountOut > a.amountOut ? 1 : -1));
+        // Failures render per-venue — an all-failed response is still data,
+        // not an exception.
         return { quoteId: resp.id, quotes, failures };
       }
 

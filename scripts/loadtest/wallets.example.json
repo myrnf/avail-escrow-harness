@@ -1,0 +1,12 @@
+[
+  { "label": "w01", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w02", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w03", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w04", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w05", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w06", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w07", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w08", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w09", "privateKey": "0x<64-hex-private-key>" },
+  { "label": "w10", "privateKey": "0x<64-hex-private-key>" }
+]

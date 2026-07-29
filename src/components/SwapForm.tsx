@@ -48,6 +48,9 @@ export function SwapForm({ isInFlight }: Props) {
   const [slippageBps, setSlippageBps] = useState<number>(DEFAULT_SLIPPAGE_BPS);
   // null = auto (best venue); set when the user picks a card explicitly.
   const [venueOverride, setVenueOverride] = useState<Venue | null>(null);
+  // Restrict Kyber routing to QuickSwap's pools, reproducing what a
+  // QuickSwap user would be quoted and execute against.
+  const [quickswapOnly, setQuickswapOnly] = useState(false);
   // Submit-time failures (stale quote, integrity check) that have no
   // mutation-state channel of their own.
   const [submitError, setSubmitError] = useState<Error | null>(null);
@@ -105,6 +108,7 @@ export function SwapForm({ isInFlight }: Props) {
     amountIn,
     slippageBps,
     venues: network.venues ? allowedVenues : undefined,
+    quickswapOnly,
     enabled: amountIn > 0n && !isInFlight,
   });
   const quotes = quote.data?.quotes ?? [];
@@ -119,6 +123,11 @@ export function SwapForm({ isInFlight }: Props) {
   // On canary the KYBERSWAP venue card replaces this row.
   const showKyberBenchmark =
     !!network.kyberChainSlug && !venueEnabled(network, "KYBERSWAP");
+  // QuickSwap-only routing needs Kyber coverage plus known QS dex ids here.
+  const qsRoutingAvailable =
+    venueEnabled(network, "KYBERSWAP") &&
+    !!network.kyberChainSlug &&
+    !!network.quickswapSources?.length;
   const kyber = useKyberQuote({
     tokenIn,
     tokenOut,
@@ -670,6 +679,12 @@ export function SwapForm({ isInFlight }: Props) {
             ? Math.max(0, Math.floor((Date.now() - vq.fetchedAt) / 1000))
             : null,
           isStale: vq ? Date.now() - vq.fetchedAt >= QUOTE_TTL_MS : false,
+          note:
+            v === "KALQIX"
+              ? "net of KalqiX taker fee"
+              : quickswapOnly && qsRoutingAvailable
+                ? "QuickSwap pools only"
+                : null,
         };
       })
     : [];
@@ -869,6 +884,19 @@ export function SwapForm({ isInFlight }: Props) {
           </div>
         ) : null}
       </div>
+
+      {/* Routing restriction — reproduces the QuickSwap quote + flow */}
+      {qsRoutingAvailable ? (
+        <div className="swap__slip">
+          <span className="swap__slip-label">Routing</span>
+          <Chip
+            active={quickswapOnly}
+            onClick={() => !formDisabled && setQuickswapOnly((v) => !v)}
+          >
+            QuickSwap pools only
+          </Chip>
+        </div>
+      ) : null}
 
       {/* Slippage */}
       <div className="swap__slip">
