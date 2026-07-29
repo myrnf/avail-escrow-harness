@@ -58,12 +58,22 @@ export interface AvailQuoteV2Response {
   error_message: string | null;
 }
 
+/** Per-venue route-discovery options (`venue_options` in the spec). Only the
+ *  KYBERSWAP fields we use are modelled; fee fields are server-controlled and
+ *  rejected by the API, so they're deliberately absent. */
+export interface VenueQuoteOption {
+  name: Venue;
+  /** Kyber source (dex) ids to route through exclusively. */
+  includedSources?: string[];
+}
+
 interface Params {
   tokenIn: Address;
   tokenOut: Address;
   amountIn: bigint;
   slippageBps: number;
   whitelistedVenues: Venue[];
+  venueOptions?: VenueQuoteOption[];
 }
 
 /**
@@ -71,36 +81,52 @@ interface Params {
  * called directly from the browser. Addresses are lowercased to match Avail's
  * case-sensitive asset registry (same as the intent client).
  *
- * `whitelisted_venues` is sent bracket-encoded, but is currently INERT — the
- * deployed handler deserializes its query string with serde_urlencoded
- * (plain axum `Query`), which cannot build sequences from a query string at
- * all: single and repeated `whitelisted_venues=KALQIX` both 400 with
- * "expected a sequence", while bracket keys are silently dropped as unknown
- * params (an *invalid* venue in bracket form is accepted without error —
- * verified on canary 2026-07-29; scalars like slippage_bps are honored, so
- * it's the sequence handling specifically). Bracket form is kept only
- * because it's the one encoding that doesn't 400. Venue filtering therefore
- * happens client-side against NetworkConfig.venues.
+ * The two array params (`whitelisted_venues`, `venue_options`) are sent with
+ * literal-bracket, serde_qs-style keys — the only shape that doesn't 400 on
+ * the deployed build. Brackets are left unencoded on purpose: URLSearchParams
+ * would percent-encode them to %5B/%5D, which the server reads as part of the
+ * key name.
  *
- * When the backend switches deserializer, match whatever it then accepts:
- * axum_extra `Query`/serde_html_form → repeated plain keys; serde_qs →
- * brackets. Same limitation blocks `venue_options`, which is why
- * source-restricted routing is fetched from Kyber directly.
+ * KNOWN GAP (canary + testnet, verified 2026-07-29): neither array param
+ * reaches the handler on the deployed build. Non-bracketed values 400 with
+ * "invalid type: string, expected a sequence"; bracketed values are dropped
+ * silently — `whitelisted_venues[]=HELLO` returns 200 instead of the spec's
+ * BAD_WHITELISTED_VENUES, and a bogus venue_options field returns 200 despite
+ * `additionalProperties: false`. Scalars (slippage_bps) parse fine and JSON
+ * bodies handle arrays fine, so it's query-string sequences specifically.
+ * Callers must therefore verify the response rather than trust the request:
+ * see honorsSources() for the KYBERSWAP route check, and the client-side
+ * venue filter in useQuote. Both become no-ops once the params take effect.
  */
 export async function getAvailQuoteV2(
   baseUrl: string,
-  { tokenIn, tokenOut, amountIn, slippageBps, whitelistedVenues }: Params
+  {
+    tokenIn,
+    tokenOut,
+    amountIn,
+    slippageBps,
+    whitelistedVenues,
+    venueOptions,
+  }: Params
 ): Promise<AvailQuoteV2Response> {
-  const params = new URLSearchParams({
-    token_in: tokenIn.toLowerCase(),
-    token_out: tokenOut.toLowerCase(),
-    amount_in: amountIn.toString(),
-    slippage_bps: String(slippageBps),
+  const parts = [
+    `token_in=${tokenIn.toLowerCase()}`,
+    `token_out=${tokenOut.toLowerCase()}`,
+    `amount_in=${amountIn.toString()}`,
+    `slippage_bps=${slippageBps}`,
+  ];
+  whitelistedVenues.forEach((v) => parts.push(`whitelisted_venues[]=${v}`));
+  venueOptions?.forEach((vo, i) => {
+    parts.push(`venue_options[${i}][name]=${vo.name}`);
+    vo.includedSources?.forEach((s, j) =>
+      parts.push(
+        `venue_options[${i}][option][included_sources][${j}]=${encodeURIComponent(s)}`
+      )
+    );
   });
-  for (const v of whitelistedVenues) {
-    params.append("whitelisted_venues[]", v);
-  }
-  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/v2/quote?${params}`);
+  const res = await fetch(
+    `${baseUrl.replace(/\/$/, "")}/v2/quote?${parts.join("&")}`
+  );
   const text = await res.text();
   let body: AvailQuoteV2Response;
   try {
