@@ -86,6 +86,8 @@ const CFG = {
 // live market and are advisory only — the server validates authoritatively.
 const ETH_STEP_WEI = 10_000_000_000n;
 const ETH_MIN_QTY_WEI = 4_200_000_000_000_000n; // 0.0042 ETH
+// Quote-asset notional floor, shared by both markets.
+const USDC_MIN_TRADE_SIZE = 8_000_000n; // 8 USDC
 
 // tokenIn is always the token being spent (permit/approve on it, unless native).
 const DIRECTIONS = {
@@ -438,16 +440,52 @@ function report(ctxs, dir) {
 }
 
 // ---- Modes ----
-async function modeBalances(wallets) {
+/** Why this wallet can't run `dir`, or null if it can. Mirrors the checks the
+ *  market would apply, so a preflight catches what would otherwise fail mid-run
+ *  (KalqiX min_trade_size / min_quantity, and gas). */
+function notReadyReason(dir, { eth, usdc, cbbtc }) {
+  if (eth === 0n) return "no ETH for gas";
+  if (dir.in === "usdc") {
+    const want = CFG.amountInOverride ?? CFG.defaultUsdcIn;
+    if (usdc < want) return `needs ${fmt(want, 6)} USDC, has ${fmt(usdc, 6)}`;
+    if (want < USDC_MIN_TRADE_SIZE)
+      return `amount_in below market min_trade_size ${fmt(USDC_MIN_TRADE_SIZE, 6)} USDC`;
+    return null;
+  }
+  if (dir.in === "cbBTC") {
+    return cbbtc === 0n ? "no cbBTC to sell" : null;
+  }
+  // Native ETH: gas reserve comes off the top, and the remainder must clear
+  // KalqiX's ETH min_quantity.
+  const spendable = eth > CFG.nativeGasReserve ? eth - CFG.nativeGasReserve : 0n;
+  const want = CFG.amountInOverride ?? CFG.defaultEthIn;
+  const usable = want < spendable ? want : spendable;
+  if (usable < ETH_MIN_QTY_WEI)
+    return `spendable ${fmt(usable, 18)} ETH below min_quantity ${fmt(ETH_MIN_QTY_WEI, 18)}`;
+  return null;
+}
+
+async function modeBalances(wallets, dir) {
   console.log(`\n=== balances (${ENV.label}, ${wallets.length} wallets) ===`);
+  const blocked = [];
   for (const w of wallets) {
     const [eth, usdc, cbbtc] = await Promise.all([
       pub.getBalance({ address: w.address }),
       balanceOf(ENV.usdc, w.address),
       balanceOf(ENV.cbBTC, w.address),
     ]);
-    console.log(`  ${w.label} ${short(w.address)}  USDC=${fmt(usdc, 6)}  cbBTC=${fmt(cbbtc, 8)}  ETH=${(Number(eth) / 1e18).toFixed(6)}`);
+    const why = notReadyReason(dir, { eth, usdc, cbbtc });
+    if (why) blocked.push(w.label);
+    console.log(
+      `  ${w.label} ${short(w.address)}  USDC=${fmt(usdc, 6)}  cbBTC=${fmt(cbbtc, 8)}` +
+      `  ETH=${(Number(eth) / 1e18).toFixed(6)}  ${why ? `⚠ ${why}` : "✓"}`
+    );
   }
+  console.log(
+    `\n  ready for ${dir.inSym}→${dir.outSym}: ${wallets.length - blocked.length}/${wallets.length}`
+  );
+  if (blocked.length)
+    console.log(`  skip them with:  --exclude ${blocked.join(",")}`);
 }
 
 async function modeBaseline(wallets, dir) {
@@ -491,7 +529,7 @@ async function main() {
   if (!dir) return console.log(`unknown --dir (use ${Object.keys(DIRECTIONS).join(", ")})`);
   const wallets = loadWallets();
 
-  if (mode === "balances") return modeBalances(wallets);
+  if (mode === "balances") return modeBalances(wallets, dir);
   if (ENV.realMoney && !hasFlag("--go")) {
     console.log(`\n⚠  '${mode}' on ${ENV.label} spends REAL funds. Re-run with --go to proceed.`);
     console.log(`   ${dir.inSym}→${dir.outSym} · ${wallets.length} wallets · RPC ${ENV.rpc}`);
