@@ -78,30 +78,64 @@ function assert(ok, label, detail = "") {
   console.log(`  ${mark} ${label}${detail ? `  ${detail}` : ""}`);
 }
 
-async function quote(body) {
-  const res = await fetch(`${BASE}/v2/quote`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* 413/415/422 are text/plain */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * The endpoint throttles under sustained load, and a throttled response is not
+ * always an obvious one — it can come back 200 with a venue-level
+ * "route not found" that is indistinguishable from real absence of liquidity.
+ * Retry transport-level failures with backoff, and pace every call, so a
+ * squeezed request never reads as a coverage gap.
+ */
+async function quote(body, tries = 3) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(`${BASE}/v2/quote`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 429 || res.status >= 500) {
+        await sleep(800 * (i + 1));
+        continue;
+      }
+      const text = await res.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        /* 413/415/422 are text/plain */
+      }
+      await sleep(250);
+      return { status: res.status, json, text };
+    } catch {
+      await sleep(800 * (i + 1));
+    }
   }
-  return { status: res.status, json, text };
+  return { status: 0, json: null, text: "request failed after retries" };
 }
 
 /** Whitelisted tokens for a chain, straight from Kyber's token API — the same
  *  source the app uses, so the probe can't drift from what it ships. */
-async function whitelistedTokens(chainId) {
+async function whitelistedTokens(chainId, tries = 3) {
   const url = `https://ks-setting.kyberswap.com/api/v1/tokens?chainIds=${chainId}&isWhitelisted=true&pageSize=100&page=1`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const j = await res.json();
-  return (j?.data?.tokens ?? []).filter((t) => !t.isHoneypot && !t.isFOT);
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url);
+      // 400 is the real answer for a chain Kyber does not serve (Mantle) —
+      // not worth retrying. Anything else transient is.
+      if (res.status === 400) return [];
+      if (!res.ok) {
+        await sleep(800 * (i + 1));
+        continue;
+      }
+      const j = await res.json();
+      return (j?.data?.tokens ?? []).filter((t) => !t.isHoneypot && !t.isFOT);
+    } catch {
+      await sleep(800 * (i + 1));
+    }
+  }
+  return [];
 }
 
 /** A quotable pair for the breadth check. */

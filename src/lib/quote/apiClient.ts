@@ -58,11 +58,12 @@ export interface AvailQuoteV2Response {
   error_message: string | null;
 }
 
-/** Per-venue route-discovery options (`venue_options` in the spec). Only the
- *  KYBERSWAP fields we use are modelled; fee fields are server-controlled and
- *  rejected by the API, so they're deliberately absent. */
+/** Route-discovery options for one venue (`venue_options` in the spec, which
+ *  caps the array at a single entry). Only the KYBERSWAP fields we use are
+ *  modelled; fee fields are server-controlled and rejected by the API, so
+ *  they're deliberately absent. */
 export interface VenueQuoteOption {
-  name: Venue;
+  venue: Venue;
   /** Kyber source (dex) ids to route through exclusively. */
   includedSources?: string[];
 }
@@ -74,7 +75,37 @@ interface Params {
   amountIn: bigint;
   slippageBps: number;
   whitelistedVenues: Venue[];
-  venueOptions?: VenueQuoteOption[];
+  venueOption?: VenueQuoteOption;
+}
+
+/** The chain the API assumes when `chain_id` is absent. The legacy GET build
+ *  predates the field entirely, so every query-string request is implicitly
+ *  this chain. */
+const LEGACY_IMPLIED_CHAIN_ID = 8453; // Base
+
+/** Query-string form of the request, for envs still on the pre-POST build.
+ *  TRANSITIONAL — delete once every env serves POST /v2/quote. */
+function legacyQuoteUrl(baseUrl: string, p: Params): string {
+  // The query form cannot carry chain_id, and the server defaults it to Base.
+  // Falling back for any other chain would answer a Polygon request with a
+  // Base quote — a plausible, well-formed, wrong answer, which is the worst
+  // failure shape available here. Refuse instead.
+  if (p.chainId !== LEGACY_IMPLIED_CHAIN_ID) {
+    throw new BadChainIdError(
+      `This deployment only serves the legacy GET /v2/quote, which cannot carry chain_id — it can only quote Base.`
+    );
+  }
+  const parts = [
+    `token_in=${p.tokenIn.toLowerCase()}`,
+    `token_out=${p.tokenOut.toLowerCase()}`,
+    `amount_in=${p.amountIn.toString()}`,
+    `slippage_bps=${p.slippageBps}`,
+  ];
+  // Array params never worked on that build (its query deserializer can't
+  // build sequences), so they're omitted here rather than sent uselessly —
+  // callers filter venues client-side. Source restriction is simply
+  // unavailable until the env serves POST.
+  return `${baseUrl.replace(/\/$/, "")}/v2/quote?${parts.join("&")}`;
 }
 
 /** The server's body limit for this endpoint. Exceeding it returns 413 with a
@@ -93,51 +124,60 @@ export class BadChainIdError extends Error {
 }
 
 /**
- * Fetch a multi-venue quote from Avail's POST /v2/quote. CORS-open, so called
- * directly from the browser. Addresses are lowercased to match Avail's
- * case-sensitive asset registry (same as the intent client).
+ * Request multi-venue quotes from Avail's POST /v2/quote. CORS-open and
+ * preflight-enabled, so it's called directly from the browser. Addresses are
+ * lowercased to match Avail's case-sensitive asset registry (same as the
+ * intent client).
  *
- * JSON body, not query params. The pre-v0.2.0 client used GET with
- * serde_qs-style bracket keys, where `whitelisted_venues[]` and `venue_options`
- * were silently dropped by the server — which forced a client-side venue filter
- * and made source restriction unverifiable. Both bind correctly on POST
- * (verified 2026-08-10: `whitelisted_venues: ["HELLO"]` → 400
- * BAD_WHITELISTED_VENUES, and `included_sources` visibly constrains the
- * returned route), so those workarounds are gone.
+ * A JSON body is what makes `whitelisted_venues` and `venue_options` usable
+ * at all — the endpoint took query params until 2026-07-29, and that build's
+ * deserializer could not construct sequences from a query string under any
+ * encoding, so both array params were silently unreachable.
+ *
+ * `chain_id` selects the execution chain. The API defaults it to Base when
+ * omitted, so it is always sent explicitly rather than relied upon.
+ *
+ * If an env still serves the older GET build it answers 405; we retry there as
+ * a query request so quoting keeps working (without the array params, which
+ * never functioned on it anyway). That fallback is refused for any chain but
+ * Base — see legacyQuoteUrl. Delete both once every env is on POST.
  */
 export async function getAvailQuoteV2(
   baseUrl: string,
-  {
+  params: Params
+): Promise<AvailQuoteV2Response> {
+  const {
     chainId,
     tokenIn,
     tokenOut,
     amountIn,
     slippageBps,
     whitelistedVenues,
-    venueOptions,
-  }: Params
-): Promise<AvailQuoteV2Response> {
+    venueOption,
+  } = params;
   const body = JSON.stringify({
     chain_id: chainId,
     token_in: tokenIn.toLowerCase(),
     token_out: tokenOut.toLowerCase(),
     amount_in: amountIn.toString(),
     slippage_bps: slippageBps,
-    ...(whitelistedVenues.length
-      ? { whitelisted_venues: whitelistedVenues }
-      : {}),
-    ...(venueOptions?.length
-      ? {
-          venue_options: venueOptions.map((vo) => ({
-            venue_name: vo.name,
-            option: vo.includedSources?.length
-              ? { included_sources: vo.includedSources }
+    // null (not []) means "all venues" per the spec; an empty allowlist would
+    // be a request for nothing.
+    whitelisted_venues: whitelistedVenues.length ? whitelistedVenues : null,
+    venue_options: venueOption
+      ? [
+          {
+            venue_name: venueOption.venue,
+            option: venueOption.includedSources?.length
+              ? { included_sources: venueOption.includedSources }
               : null,
-          })),
-        }
-      : {}),
+          },
+        ]
+      : null,
   });
 
+  // Over the limit the server answers 413 in text/plain, losing the JSON error
+  // envelope — cheaper to catch here than to decode that.
   const bytes = new TextEncoder().encode(body).length;
   if (bytes > MAX_BODY_BYTES) {
     throw new Error(
@@ -145,17 +185,21 @@ export async function getAvailQuoteV2(
     );
   }
 
-  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/v2/quote`, {
+  let res = await fetch(`${baseUrl.replace(/\/$/, "")}/v2/quote`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body,
   });
+  if (res.status === 405) {
+    res = await fetch(legacyQuoteUrl(baseUrl, params));
+  }
   const text = await res.text();
   let parsed: AvailQuoteV2Response;
   try {
-    // Both success and request-level errors come back as JSON (with
-    // error_code); the caller inspects error_code / quotes. 413/415/422 are
-    // text/plain and fall through to the catch.
+    // Quote-level and request-level failures come back as JSON carrying
+    // error_code; the caller inspects error_code / quotes. Malformed-request
+    // statuses (413 body too large, 415 wrong content-type, 422 bad shape,
+    // and JSON-syntax 400s) answer in text/plain and land in the catch.
     parsed = JSON.parse(text) as AvailQuoteV2Response;
   } catch {
     if (res.status === 503) throw new ServiceUnavailableError();

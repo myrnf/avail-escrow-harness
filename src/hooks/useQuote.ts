@@ -151,8 +151,8 @@ export function useQuote({
           amountIn,
           slippageBps,
           whitelistedVenues: allowedVenues,
-          venueOptions: restrictTo?.length
-            ? [{ name: "KYBERSWAP", includedSources: restrictTo }]
+          venueOption: restrictTo?.length
+            ? { venue: "KYBERSWAP", includedSources: restrictTo }
             : undefined,
         });
         log({
