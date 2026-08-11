@@ -5,8 +5,8 @@ import {
   type Lifecycle,
   type TimingStep,
 } from "../store/intentTiming";
-import type { Venue } from "../config/networks";
-import { useActiveNetwork } from "./useActiveNetwork";
+import type { Venue } from "../config/deployments";
+import { useActiveDeployment } from "./useSession";
 
 export interface CurrentLifecycle extends Lifecycle {
   start: (venue: Venue) => void;
@@ -24,7 +24,7 @@ export interface CurrentLifecycle extends Lifecycle {
  * slice; per-network history is preserved across switches.
  */
 export function useCurrentLifecycle(): CurrentLifecycle {
-  const networkKey = useActiveNetwork().key;
+  const networkKey = useActiveDeployment().key;
   const lifecycle = useIntentTiming(
     (s) => s.entries[networkKey] ?? EMPTY_LIFECYCLE
   );

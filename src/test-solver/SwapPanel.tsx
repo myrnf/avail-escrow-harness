@@ -1,12 +1,15 @@
 import { Panel, PanelStatus } from "../components/primitives/Panel";
-import { NETWORKS, txExplorerUrl } from "../config/networks";
+import { DEPLOYMENTS } from "../config/deployments";
+import { chainConfig, txExplorerUrl } from "../config/chains";
+import { base } from "viem/chains";
 import { TOKEN_META } from "../config/tokens";
 import type { TokenSymbol } from "../config/tokens";
 import { fmtAmount, shortHash } from "../lib/format";
 import type { Algo, Swap, SwapStatus } from "./lib/types";
 import type { Address } from "viem";
 
-const NETWORK = NETWORKS.canary;
+const NETWORK = DEPLOYMENTS.canary; // test-solver is implicitly Base mainnet
+const CHAIN = chainConfig(base.id);
 
 const STEP_ORDER: { key: SwapStatus; label: string }[] = [
   { key: "REQUESTED", label: "Swap requested" },
@@ -40,7 +43,7 @@ function panelStatus(s: SwapStatus): { state: "idle" | "live" | "warn" | "ok" | 
 function tokenInfoByAddress(addr: Address): { decimals: number; symbol: string } | null {
   const lower = addr.toLowerCase();
   for (const sym of Object.keys(TOKEN_META) as TokenSymbol[]) {
-    if (NETWORK.tokens[sym].toLowerCase() === lower) {
+    if (NETWORK.kalqixTokens[sym].toLowerCase() === lower) {
       return { decimals: TOKEN_META[sym].decimals, symbol: sym };
     }
   }
@@ -261,7 +264,7 @@ export function SwapPanel({ swap }: { swap: Swap | null }) {
             {swap.deposit_tx_hash ? (
               <a
                 className="exec__txlink"
-                href={txExplorerUrl(NETWORK, swap.deposit_tx_hash)}
+                href={txExplorerUrl(CHAIN, swap.deposit_tx_hash)}
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -271,7 +274,7 @@ export function SwapPanel({ swap }: { swap: Swap | null }) {
             {swap.payout_tx_hash ? (
               <a
                 className="exec__txlink"
-                href={txExplorerUrl(NETWORK, swap.payout_tx_hash)}
+                href={txExplorerUrl(CHAIN, swap.payout_tx_hash)}
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -281,7 +284,7 @@ export function SwapPanel({ swap }: { swap: Swap | null }) {
             {swap.refund_tx_hash ? (
               <a
                 className="exec__txlink"
-                href={txExplorerUrl(NETWORK, swap.refund_tx_hash)}
+                href={txExplorerUrl(CHAIN, swap.refund_tx_hash)}
                 target="_blank"
                 rel="noopener noreferrer"
               >

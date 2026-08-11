@@ -10,7 +10,7 @@ import {
 } from "../lib/intent";
 import { shortAddress } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
-import { useActiveNetwork } from "./useActiveNetwork";
+import { useActiveDeployment } from "./useSession";
 
 // Intent status polling cadence while in-flight. 500ms keeps the
 // harness's per-phase timings tight enough to be useful as actual
@@ -20,7 +20,7 @@ const POLL_MS = 500;
 
 export function useCreateIntent() {
   const log = useActivityLog((s) => s.push);
-  const network = useActiveNetwork();
+  const network = useActiveDeployment();
   return useMutation({
     mutationFn: async (body: CreateIntentRequest) => {
       const t0 = performance.now();
@@ -58,7 +58,7 @@ export function useCreateIntent() {
  * lifecycle; their terminal state is the router tx receipt.
  */
 export function useIntentStatus(id: string | null) {
-  const network = useActiveNetwork();
+  const network = useActiveDeployment();
   const v2 = !!network.venues;
   return useQuery<IntentStatusView | null>({
     queryKey: ["intent", v2 ? "v2" : "v1", network.key, id],

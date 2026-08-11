@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Venue } from "../config/networks";
+import type { Venue } from "../config/deployments";
 
 export type StepKey =
   | "submit"          // user clicked "Confirm swap"

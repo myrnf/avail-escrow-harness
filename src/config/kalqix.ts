@@ -1,5 +1,5 @@
 import type { TokenSymbol } from "./tokens";
-import type { NetworkConfig } from "./networks";
+import type { Deployment } from "./deployments";
 
 /**
  * Mapping from (tokenIn, tokenOut) → KalqiX market + side.
@@ -28,7 +28,7 @@ function baseAsset(
 }
 
 export function routeFor(
-  network: NetworkConfig,
+  network: Deployment,
   tokenIn: TokenSymbol,
   tokenOut: TokenSymbol
 ): MarketRoute | null {
@@ -39,4 +39,32 @@ export function routeFor(
   // Paying USDC buys the base; paying the base sells it for USDC.
   const side = tokenIn === "USDC" ? "BUY" : "SELL";
   return { ticker, side };
+}
+
+/** Which KalqiX asset, if any, a token address corresponds to on this
+ *  deployment. Tokens are addressed by (chainId, address) now, so this is how
+ *  the KalqiX-only market map is reached from a generic selection. Returns null
+ *  for anything KalqiX doesn't trade — i.e. almost everything off Base. */
+export function kalqixSymbolFor(
+  network: Deployment,
+  address: string
+): TokenSymbol | null {
+  const lower = address.toLowerCase();
+  for (const sym of ["USDC", "cbBTC", "ETH"] as const) {
+    if (network.kalqixTokens[sym].toLowerCase() === lower) return sym;
+  }
+  return null;
+}
+
+/** The KalqiX market for a token pair given by address, or null when the pair
+ *  isn't a USDC-quoted KalqiX market. */
+export function routeForAddresses(
+  network: Deployment,
+  tokenInAddress: string,
+  tokenOutAddress: string
+): MarketRoute | null {
+  const symIn = kalqixSymbolFor(network, tokenInAddress);
+  const symOut = kalqixSymbolFor(network, tokenOutAddress);
+  if (!symIn || !symOut) return null;
+  return routeFor(network, symIn, symOut);
 }

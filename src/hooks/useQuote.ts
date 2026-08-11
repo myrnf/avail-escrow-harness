@@ -4,15 +4,17 @@ import { getMarket, getMarketPrice, quoteSwap } from "../lib/quote";
 import { rawPriceFromMarketPrice, QuoteValidationError } from "../lib/quote/calc";
 import {
   getAvailQuoteV2,
+  BadChainIdError,
   type AvailQuoteVenueV2,
 } from "../lib/quote/apiClient";
 import type { MultiQuote, VenueFailure, VenueQuote } from "../lib/quote/types";
 import { disallowedExchanges } from "../lib/quote/kyberSources";
-import { routeFor } from "../config/kalqix";
-import { getToken, type TokenSymbol } from "../config/tokens";
-import type { Venue } from "../config/networks";
+import { kalqixSymbolFor, routeForAddresses } from "../config/kalqix";
+import { getToken } from "../config/tokens";
+import type { ChainToken } from "../lib/tokens";
+import type { Venue } from "../config/deployments";
 import { useActivityLog } from "../store/activityLog";
-import { useActiveNetwork } from "./useActiveNetwork";
+import { useActiveChain, useActiveDeployment } from "./useSession";
 
 const QUOTE_REFRESH_MS = 5_000;
 
@@ -26,11 +28,12 @@ const VALIDATION_ERROR_CODES = new Set([
   "NO_MARKET_FOUND",
   "BAD_SLIPPAGE",
   "BAD_WHITELISTED_VENUES",
+  "BAD_CHAIN_ID",
 ]);
 
 export function useMarket(ticker: string, enabled = true) {
   const log = useActivityLog((s) => s.push);
-  const network = useActiveNetwork();
+  const network = useActiveDeployment();
   return useQuery({
     queryKey: ["market", network.key, ticker],
     enabled,
@@ -50,19 +53,22 @@ export function useMarket(ticker: string, enabled = true) {
 }
 
 interface QuoteArgs {
-  tokenIn: TokenSymbol;
-  tokenOut: TokenSymbol;
+  tokenIn: ChainToken | null;
+  tokenOut: ChainToken | null;
   amountIn: bigint;
   slippageBps: number;
   /** Venues to quote (already filtered for supported-token limits by the
-   *  caller). Ignored on the legacy local path. Defaults to the network's
+   *  caller). Ignored on the legacy local path. Defaults to the deployment's
    *  configured venues. */
   venues?: Venue[];
-  /** Restrict KYBERSWAP routing to this network's QuickSwap pools, to
-   *  reproduce what a QuickSwap user would be quoted and execute against.
-   *  Ignored where the network defines no `quickswapSources`. */
+  /** Restrict KYBERSWAP routing to this chain's QuickSwap pools, to reproduce
+   *  what a QuickSwap user would be quoted and execute against. Ignored on
+   *  chains with no `quickswapSources`. */
   quickswapOnly?: boolean;
   enabled?: boolean;
+  /** Poll cadence. The open-routing benchmark runs slower than the primary
+   *  quote — it's a reference number, not the one being executed. */
+  refreshMs?: number;
 }
 
 export function useQuote({
@@ -73,23 +79,30 @@ export function useQuote({
   venues,
   quickswapOnly = false,
   enabled = true,
+  refreshMs = QUOTE_REFRESH_MS,
 }: QuoteArgs) {
-  const network = useActiveNetwork();
-  // venues present on the network → multi-venue /v2 API path; absent →
+  const network = useActiveDeployment();
+  const chain = useActiveChain();
+  // venues present on the deployment → multi-venue /v2 API path; absent →
   // legacy local KalqiX quoting (mainnet).
   const v2 = !!network.venues;
   const allowedVenues = useMemo(
     () => venues ?? network.venues ?? [],
     [venues, network.venues]
   );
+  // A KalqiX market only exists for USDC-quoted pairs of KalqiX assets, which
+  // is Base-only. Everything else quotes through KYBERSWAP with no route.
   const route = useMemo(
-    () => routeFor(network, tokenIn, tokenOut),
-    [network, tokenIn, tokenOut]
+    () =>
+      tokenIn && tokenOut && chain.kalqixEnabled
+        ? routeForAddresses(network, tokenIn.address, tokenOut.address)
+        : null,
+    [network, chain.kalqixEnabled, tokenIn, tokenOut]
   );
   // Market metadata is only needed for the local quoteSwap path.
   const market = useMarket(
     route?.ticker ?? network.kalqixMarketTickers.cbBTC,
-    !v2
+    !v2 && !!route
   );
   const log = useActivityLog((s) => s.push);
 
@@ -97,29 +110,29 @@ export function useQuote({
     queryKey: [
       "quote",
       network.key,
+      chain.id,
       v2,
       allowedVenues.join(","),
-      route?.ticker,
-      route?.side,
-      tokenIn,
-      tokenOut,
+      tokenIn?.address,
+      tokenOut?.address,
       amountIn.toString(),
       slippageBps,
       quickswapOnly,
     ],
     enabled:
       enabled &&
-      !!route &&
+      !!tokenIn &&
+      !!tokenOut &&
       amountIn > 0n &&
-      (v2 ? allowedVenues.length > 0 : !!market.data),
+      // The legacy path can only quote a KalqiX market; v2 quotes any pair.
+      (v2 ? allowedVenues.length > 0 : !!route && !!market.data),
     refetchInterval: (q) =>
-      q.state.error instanceof QuoteValidationError ? false : QUOTE_REFRESH_MS,
+      q.state.error instanceof QuoteValidationError ? false : refreshMs,
     refetchIntervalInBackground: false,
-    retry: (_n, err) => !(err instanceof QuoteValidationError),
+    retry: (_n, err) =>
+      !(err instanceof QuoteValidationError) && !(err instanceof BadChainIdError),
     queryFn: async (): Promise<MultiQuote> => {
-      if (!route) throw new Error("Missing route");
-      const inInfo = getToken(network, tokenIn);
-      const outInfo = getToken(network, tokenOut);
+      if (!tokenIn || !tokenOut) throw new Error("Missing token selection");
 
       // ---- Avail /v2/quote path (multi-venue, service owns the math) ----
       if (v2) {
@@ -127,13 +140,14 @@ export function useQuote({
         // discovery via venue_options. KALQIX is unaffected.
         const restrictTo =
           quickswapOnly && allowedVenues.includes("KYBERSWAP")
-            ? network.quickswapSources
+            ? chain.quickswapSources
             : undefined;
 
         const t0 = performance.now();
         const resp = await getAvailQuoteV2(network.availEscrowBaseUrl, {
-          tokenIn: inInfo.address,
-          tokenOut: outInfo.address,
+          chainId: chain.id,
+          tokenIn: tokenIn.address,
+          tokenOut: tokenOut.address,
           amountIn,
           slippageBps,
           whitelistedVenues: allowedVenues,
@@ -144,7 +158,7 @@ export function useQuote({
         log({
           level: "info",
           channel: "API",
-          message: `GET /v2/quote ${tokenIn}→${tokenOut} · ${resp.error_code ?? "200"}`,
+          message: `POST /v2/quote ${tokenIn.symbol}→${tokenOut.symbol} · ${resp.error_code ?? "200"}`,
           details: `${Math.round(performance.now() - t0)}ms`,
         });
         if (resp.error_code) {
@@ -157,22 +171,39 @@ export function useQuote({
 
         const quotes: VenueQuote[] = [];
         const failures: VenueFailure[] = [];
-        // Belt-and-braces: the whitelist param is sent, but the live backend
-        // doesn't filter on it yet (see getAvailQuoteV2) — restrict to this
-        // env's enabled venues here regardless.
-        const allowed = new Set<string>(allowedVenues);
+        // No client-side venue filter: `whitelisted_venues` binds server-side
+        // on POST, so the response only contains venues we asked for.
         for (const v of resp.quotes ?? []) {
-          if (!allowed.has(v.venue_name)) continue;
           const parsed = parseVenueQuote(v, {
             userAmountIn: amountIn,
             slippageBps,
-            tokenIn,
-            inDecimals: inInfo.decimals,
-            outDecimals: outInfo.decimals,
-            side: route.side,
-            ticker: route.ticker,
+            inDecimals: tokenIn.decimals,
+            outDecimals: tokenOut.decimals,
+            // Price is quoted per base asset only on a KalqiX market; for an
+            // arbitrary Kyber pair it's simply output-per-input.
+            quoteLegIsIn:
+              !!route && kalqixSymbolFor(network, tokenIn.address) === "USDC",
+            side: route?.side ?? "BUY",
+            ticker: route?.ticker ?? `${tokenIn.symbol}_${tokenOut.symbol}`,
           });
           if ("failure" in parsed) {
+            // "route not found" while restricted almost always means the pair
+            // has no QuickSwap pool at all, not that the venue is down —
+            // long-tail tokens routinely trade only on Aerodrome/Uniswap/etc.
+            // Say so, and point at the toggle that fixes it. (This is the same
+            // dead end QuickSwap's own UI hits before offering its V4
+            // fallback.)
+            if (
+              restrictTo?.length &&
+              parsed.failure.venue === "KYBERSWAP" &&
+              /route not found/i.test(parsed.failure.message ?? "")
+            ) {
+              failures.push({
+                ...parsed.failure,
+                message: `No QuickSwap pool for this pair on ${chain.label} — turn off QuickSwap-only routing to quote it.`,
+              });
+              continue;
+            }
             failures.push(parsed.failure);
             continue;
           }
@@ -202,7 +233,11 @@ export function useQuote({
           quotes.push(parsed.quote);
         }
         if (quotes.length === 0 && failures.length === 0) {
-          throw new QuoteValidationError("No route available for this pair.");
+          // A 200 with an empty `quotes` array is how the API reports an
+          // unsatisfiable chain+venue combination (e.g. KALQIX on Arbitrum).
+          throw new QuoteValidationError(
+            `No venue serves this pair on ${chain.label}.`
+          );
         }
         // Best-first. The server already sorts, but a substituted
         // QuickSwap-only quote lands out of order, so re-sort regardless.
@@ -213,7 +248,13 @@ export function useQuote({
       }
 
       // ---- Legacy local path: KalqiX price + quoteSwap (mainnet) ----
+      if (!route) throw new Error("Pair is not a KalqiX market");
       if (!market.data) throw new Error("Missing market");
+      const symIn = kalqixSymbolFor(network, tokenIn.address);
+      const symOut = kalqixSymbolFor(network, tokenOut.address);
+      if (!symIn || !symOut) throw new Error("Pair is not a KalqiX market");
+      const inInfo = getToken(network, symIn);
+      const outInfo = getToken(network, symOut);
       const t0 = performance.now();
       const price = await getMarketPrice(
         network.kalqixBaseUrl,
@@ -264,9 +305,11 @@ export function useQuote({
 interface ParseCtx {
   userAmountIn: bigint;
   slippageBps: number;
-  tokenIn: TokenSymbol;
   inDecimals: number;
   outDecimals: number;
+  /** True when the input token is the market's quote leg (USDC on a KalqiX
+   *  market). Drives which way round the displayed price reads. */
+  quoteLegIsIn: boolean;
   side: "BUY" | "SELL";
   ticker: string;
 }
@@ -305,14 +348,18 @@ function parseVenueQuote(
       ? BigInt(v.amount_out_min)
       : (amountOut * BigInt(10_000 - ctx.slippageBps)) / 10_000n;
 
-  // Derive a display price (USDC per base) from the amounts — the API
-  // returns no price field. USDC is always the quote leg.
-  const usdcAmt = ctx.tokenIn === "USDC" ? amountIn : amountOut;
-  const baseAmt = ctx.tokenIn === "USDC" ? amountOut : amountIn;
-  const baseDecimals =
-    ctx.tokenIn === "USDC" ? ctx.outDecimals : ctx.inDecimals;
-  const baseHuman = Number(baseAmt) / 10 ** baseDecimals;
-  const priceHuman = baseHuman > 0 ? Number(usdcAmt) / 1e6 / baseHuman : 0;
+  // Display price, derived from the amounts (the API returns no price field)
+  // using each token's own decimals. On a KalqiX market with USDC in, that
+  // reads as quote-per-base; otherwise it's plainly output-per-input.
+  const inHuman = Number(amountIn) / 10 ** ctx.inDecimals;
+  const outHuman = Number(amountOut) / 10 ** ctx.outDecimals;
+  const priceHuman = ctx.quoteLegIsIn
+    ? outHuman > 0
+      ? inHuman / outHuman
+      : 0
+    : inHuman > 0
+      ? outHuman / inHuman
+      : 0;
 
   return {
     quote: {

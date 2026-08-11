@@ -1,19 +1,22 @@
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount, useBlockNumber } from "wagmi";
-import { NETWORKS } from "../config/networks";
+import { DEPLOYMENTS } from "../config/deployments";
+import { chainConfig } from "../config/chains";
+import { base } from "viem/chains";
 import { shortAddress } from "../lib/format";
 
-const NETWORK = NETWORKS.canary; // test-solver is implicitly Base mainnet
+const NETWORK = DEPLOYMENTS.canary; // test-solver is implicitly Base mainnet
+const CHAIN = chainConfig(base.id);
 
 export function Header() {
   const { isConnected, chainId } = useAccount();
   const block = useBlockNumber({
     watch: true,
-    chainId: NETWORK.chain.id,
+    chainId: CHAIN.chain.id,
     query: { refetchInterval: 6_000 },
   });
   const wrongChain =
-    isConnected && chainId !== undefined && chainId !== NETWORK.chain.id;
+    isConnected && chainId !== undefined && chainId !== CHAIN.chain.id;
 
   return (
     <header className="header">

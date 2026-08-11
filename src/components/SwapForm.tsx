@@ -1,25 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
-import { useAccount } from "wagmi";
+import { useAccount, usePublicClient } from "wagmi";
+import type { Address, Hex } from "viem";
 import { Panel, PanelStatus } from "./primitives/Panel";
-import { TokenPill } from "./primitives/TokenPill";
 import { TokenSelect } from "./primitives/TokenSelect";
 import { Chip } from "./primitives/Chip";
 import { VenueQuoteCards, type VenueCardModel } from "./VenueQuoteCards";
-import { getToken, TOKEN_LIST_META, type TokenSymbol } from "../config/tokens";
+import { getToken } from "../config/tokens";
+import { kalqixSymbolFor } from "../config/kalqix";
 import {
   DEFAULT_SLIPPAGE_BPS,
   SLIPPAGE_PRESETS_BPS,
   QUOTE_TTL_MS,
-  KYBERSWAP_TOKEN_ALLOWLIST,
 } from "../config/avail";
-import { venueEnabled, type Venue } from "../config/networks";
+import { venueEnabled, type Venue } from "../config/deployments";
 import { useQuote } from "../hooks/useQuote";
 import { useKyberQuote } from "../hooks/useKyberQuote";
 import { useSupportedTokens } from "../hooks/useSupportedTokens";
 import { useInputBalance, useTokenAllowance, useApprove } from "../hooks/useErc20";
 import { useCreateIntent } from "../hooks/useIntent";
 import { useDeposit } from "../hooks/useDeposit";
-import { useActiveNetwork } from "../hooks/useActiveNetwork";
+import { useActiveChain, useActiveDeployment } from "../hooks/useSession";
+import { useChainTokens } from "../hooks/useChainTokens";
+import { nativeToken, type ChainToken } from "../lib/tokens";
+import { isQuickswapChain } from "../config/chains";
 import { usePermit } from "../hooks/usePermit";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { ServiceUnavailableError } from "../lib/quote/apiClient";
@@ -34,16 +37,26 @@ interface Props {
 }
 
 export function SwapForm({ isInFlight }: Props) {
-  const { address, isConnected } = useAccount();
-  const network = useActiveNetwork();
-  // USDC is always the hub leg; the user picks the other (base) asset and which
-  // side USDC sits on. This guarantees only USDC-quoted pairs (the only markets
-  // KalqiX/Avail support) — no invalid cbBTC↔ETH combinations.
-  const [pairedToken, setPairedToken] =
-    useState<Exclude<TokenSymbol, "USDC">>("cbBTC");
-  const [usdcSide, setUsdcSide] = useState<"in" | "out">("in");
-  const tokenIn: TokenSymbol = usdcSide === "in" ? "USDC" : pairedToken;
-  const tokenOut: TokenSymbol = usdcSide === "in" ? pairedToken : "USDC";
+  const { address, isConnected, chainId: walletChainId } = useAccount();
+  const publicClient = usePublicClient();
+  const network = useActiveDeployment();
+  const chain = useActiveChain();
+  // Both legs are freely selectable. The old USDC-hub constraint was a KalqiX
+  // market rule; KyberSwap routes arbitrary pairs, and KalqiX pairs are still
+  // enforced by routeForAddresses returning null for anything else.
+  const {
+    tokens,
+    isLoading: tokensLoading,
+    listUnavailable,
+    searchRemote,
+    resolveAndAdd,
+    quickswapListed: qsListedCount,
+    quickswapTotal: qsTotalCount,
+  } = useChainTokens();
+  // Native is available synchronously on every chain, so the form always has a
+  // valid input token even before the token list resolves.
+  const [tokenIn, setTokenIn] = useState<ChainToken>(() => nativeToken(chain));
+  const [tokenOut, setTokenOut] = useState<ChainToken | null>(null);
   const [amountInStr, setAmountInStr] = useState("");
   const [slippageBps, setSlippageBps] = useState<number>(DEFAULT_SLIPPAGE_BPS);
   // null = auto (best venue); set when the user picks a card explicitly.
@@ -57,14 +70,24 @@ export function SwapForm({ isInFlight }: Props) {
   const log = useActivityLog((s) => s.push);
   const lifecycle = useCurrentLifecycle();
 
-  const inInfo = getToken(network, tokenIn);
-  const outInfo = getToken(network, tokenOut);
+  const inInfo = tokenIn;
+  const outInfo = tokenOut;
   const isMultiVenue = (network.venues?.length ?? 0) > 1;
 
-  // Non-USDC leg options for the token selector (cbBTC, ETH).
-  const pairedOptions = TOKEN_LIST_META.filter((t) => t.symbol !== "USDC").map(
-    (t) => getToken(network, t.symbol)
-  );
+  // EIP-2612 only ever applies on the KalqiX path (Base), and only to the three
+  // assets that deployment registers. Everything else approves normally — the
+  // Kyber router takes no permits at all.
+  const kalqixSymIn = kalqixSymbolFor(network, tokenIn.address);
+  const permitTokenInfo =
+    chain.kalqixEnabled && kalqixSymIn ? getToken(network, kalqixSymIn) : null;
+  const inSupportsPermit = !!permitTokenInfo?.supportsPermit;
+  // KalqiX only trades USDC-quoted pairs of its own registered assets.
+  const kalqixPairSupported =
+    !!tokenOut &&
+    !!kalqixSymIn &&
+    !!kalqixSymbolFor(network, tokenOut.address) &&
+    (kalqixSymIn === "USDC") !==
+      (kalqixSymbolFor(network, tokenOut.address) === "USDC");
 
   const amountIn = useMemo(() => {
     try {
@@ -83,17 +106,17 @@ export function SwapForm({ isInFlight }: Props) {
   // and rendered as a disabled card with the reason, instead of letting it
   // fail server-side.
   const supported = useSupportedTokens();
-  const kyberPairAllowed =
-    (KYBERSWAP_TOKEN_ALLOWLIST as readonly string[]).includes(tokenIn) &&
-    (KYBERSWAP_TOKEN_ALLOWLIST as readonly string[]).includes(tokenOut);
   const venueStates = (network.venues ?? []).map((venue) => {
     let reason: string | null = null;
-    if (venue === "KYBERSWAP" && !kyberPairAllowed) {
-      reason = "ETH pairs not routed via KyberSwap";
+    if (venue === "KALQIX" && !chain.kalqixEnabled) {
+      // KalqiX runs on Base only — the API returns no KALQIX quote elsewhere.
+      reason = `not available on ${chain.label}`;
+    } else if (venue === "KALQIX" && !kalqixPairSupported) {
+      reason = "not a KalqiX market";
     } else {
       const violation = supported.violation(venue, inInfo.address, amountIn);
       if (violation) {
-        reason = `${violation.kind === "below_min" ? "below venue min" : "above venue max"} · ${fmtAmount(violation.limit, inInfo.decimals, { minDp: 0 })} ${tokenIn}`;
+        reason = `${violation.kind === "below_min" ? "below venue min" : "above venue max"} · ${fmtAmount(violation.limit, inInfo.decimals, { minDp: 0 })} ${inInfo.symbol}`;
       }
     }
     return { venue, reason };
@@ -112,6 +135,7 @@ export function SwapForm({ isInFlight }: Props) {
     enabled: amountIn > 0n && !isInFlight,
   });
   const quotes = quote.data?.quotes ?? [];
+
   // Auto-select the best (first) venue; a user override sticks across the 5s
   // refresh while that venue keeps succeeding, and falls back to best if it
   // drops out.
@@ -122,12 +146,29 @@ export function SwapForm({ isInFlight }: Props) {
   // coverage AND isn't already a first-class venue (i.e. legacy mainnet).
   // On canary the KYBERSWAP venue card replaces this row.
   const showKyberBenchmark =
-    !!network.kyberChainSlug && !venueEnabled(network, "KYBERSWAP");
-  // QuickSwap-only routing needs Kyber coverage plus known QS dex ids here.
+    !!chain.kyberSlug && !venueEnabled(network, "KYBERSWAP");
+  // QuickSwap-only routing needs Kyber coverage plus known QS dex ids on the
+  // SELECTED CHAIN — QuickSwap routes via Kyber on Polygon and Base only.
   const qsRoutingAvailable =
     venueEnabled(network, "KYBERSWAP") &&
-    !!network.kyberChainSlug &&
-    !!network.quickswapSources?.length;
+    !!chain.kyberSlug &&
+    isQuickswapChain(chain);
+  // Open-routing benchmark, fetched only while the QuickSwap restriction is on.
+  // The delta between the two is the number this harness exists to produce for
+  // QuickSwap: what routing exclusively through their own pools costs — or, on
+  // some pairs, gains. Polled slower than the primary quote; it's a reference,
+  // not the quote being executed.
+  const openQuote = useQuote({
+    tokenIn,
+    tokenOut,
+    amountIn,
+    slippageBps,
+    venues: ["KYBERSWAP"],
+    quickswapOnly: false,
+    enabled:
+      quickswapOnly && qsRoutingAvailable && amountIn > 0n && !isInFlight,
+    refreshMs: 15_000,
+  });
   const kyber = useKyberQuote({
     tokenIn,
     tokenOut,
@@ -143,10 +184,27 @@ export function SwapForm({ isInFlight }: Props) {
         )
       : null;
 
+  // Positive = QuickSwap-only routing is WORSE than open Kyber routing, in bps.
+  const qsCostBps = (() => {
+    if (!quickswapOnly || !qsRoutingAvailable) return null;
+    const restricted = quotes.find((q) => q.venue === "KYBERSWAP");
+    const open = openQuote.data?.quotes.find((q) => q.venue === "KYBERSWAP");
+    if (!restricted || !open || open.amountOut === 0n) return null;
+    return Number(
+      ((open.amountOut - restricted.amountOut) * 10_000n) / open.amountOut
+    );
+  })();
+
   // Approval spender follows the selected venue: KalqiX escrow or Kyber
   // router. The spender is part of the allowance query key, so switching
   // venue cards re-reads the right allowance automatically.
-  const spender = selected?.approvalAddress ?? network.escrowContract;
+  // Falling back to the escrow is only valid where KalqiX actually runs
+  // (Base). On any other chain that address is meaningless, so approving it
+  // would burn gas granting allowance to nothing — leave the spender null and
+  // let the CTA block instead.
+  const spender =
+    selected?.approvalAddress ??
+    (chain.kalqixEnabled ? network.escrowContract : undefined);
   // Native ETH is paid via msg.value — no ERC-20 allowance exists, so skip the
   // allowance read entirely (balanceOf/allowance on the 0xEeee… sentinel would
   // just revert).
@@ -204,9 +262,10 @@ export function SwapForm({ isInFlight }: Props) {
     return () => timers.forEach(clearTimeout);
   }, [approve.isSuccess]);
 
-  // Reset local form + mutation state when the harness network changes —
-  // addresses and escrow contract differ. The lifecycle store is keyed by
-  // network and preserves history per-network, so we don't reset it here.
+  // Reset local form + mutation state when the deployment OR chain changes —
+  // token addresses and the escrow contract are both scoped to them, so a
+  // carried-over selection would submit an address from the wrong chain. The
+  // lifecycle store is keyed separately and preserves its own history.
   useEffect(() => {
     setAmountInStr("");
     setVenueOverride(null);
@@ -216,7 +275,72 @@ export function SwapForm({ isInFlight }: Props) {
     approve.reset();
     setPermitError(null);
     setSubmitError(null);
-  }, [network.key]);
+  }, [network.key, chain.id]);
+
+  // Re-seed the pair on every chain change. Native is available synchronously,
+  // so the input leg is never empty; the output leg waits for the token list.
+  useEffect(() => {
+    setTokenIn(nativeToken(chain));
+    setTokenOut(null);
+  }, [chain.id]);
+
+  // Belt and braces on the above: a token record carries the chain it came
+  // from, and one surviving a switch would send a foreign address with this
+  // chain's chain_id — a wrong-chain quote that looks valid. Cheap to assert.
+  useEffect(() => {
+    if (tokenIn.chainId !== chain.id) setTokenIn(nativeToken(chain));
+    if (tokenOut && tokenOut.chainId !== chain.id) setTokenOut(null);
+  }, [chain, tokenIn, tokenOut]);
+
+  // Fill the output leg once the list arrives — a stablecoin if there is one,
+  // which is the pair a tester almost always wants and gives every chain a
+  // working default without hand-curating one per chain.
+  //
+  // This also enforces the invariant that the two legs are never the same
+  // token. On a chain switch the input is re-seeded to native and the output is
+  // cleared, but those land across separate renders while the token list is
+  // also being replaced; if the output ever ends up equal to the input the pair
+  // can't be quoted at all, and the UI shows two identical pills with no
+  // explanation. Re-picking is cheap and correct however that state arose.
+  useEffect(() => {
+    if (!tokens.length) return;
+    const clashes =
+      !!tokenOut &&
+      tokenOut.address.toLowerCase() === tokenIn.address.toLowerCase();
+    if (tokenOut && !clashes) return;
+    const usable = tokens.filter(
+      (t) => t.address.toLowerCase() !== tokenIn.address.toLowerCase()
+    );
+    const pick =
+      usable.find((t) => t.isStable) ?? usable.find((t) => !t.isNative) ?? usable[0];
+    if (pick) setTokenOut(pick);
+  }, [tokens, tokenIn, tokenOut]);
+
+  // Adopt the enriched entry once the token list resolves. A selection made
+  // before the list loaded — notably the synchronous native default — holds a
+  // bare record with no logo or permit metadata, while the merged list has the
+  // filled-in one. Without this the pill shows the initials fallback until the
+  // user reselects the same token, which is exactly what it looks like: a bug.
+  useEffect(() => {
+    if (!tokens.length) return;
+    const enrich = (t: ChainToken | null) => {
+      // Addresses repeat across chains (WETH is 0x4200…0006 on both Base and
+      // Optimism), so match on chain too or a stale record can be "enriched"
+      // into looking current.
+      if (!t || t.chainId !== chain.id) return null;
+      const found = tokens.find(
+        (x) => x.address.toLowerCase() === t.address.toLowerCase()
+      );
+      // Only swap when it actually adds something, so this can't churn state.
+      return found && found !== t && (found.logoURI ?? "") !== (t.logoURI ?? "")
+        ? found
+        : null;
+    };
+    const nextIn = enrich(tokenIn);
+    if (nextIn) setTokenIn(nextIn);
+    const nextOut = enrich(tokenOut);
+    if (nextOut) setTokenOut(nextOut);
+  }, [tokens, tokenIn, tokenOut, chain.id]);
 
   // ---------- LIFECYCLE RECORDING ----------
   // createIntent succeeded → record + propagate intent ID up.
@@ -284,8 +408,10 @@ export function SwapForm({ isInFlight }: Props) {
 
   useEffect(() => {
     if (routerTx.isSuccess && routerTx.txHash) {
-      const out = receiptAmountOut(routerTx.receipt, outInfo, address);
-      if (out !== null) {
+      const out = outInfo
+        ? receiptAmountOut(routerTx.receipt, outInfo, address)
+        : null;
+      if (out !== null && outInfo) {
         lifecycle.setActualAmountOut(
           `${fmtAmount(out, outInfo.decimals)} ${outInfo.symbol}`
         );
@@ -329,9 +455,9 @@ export function SwapForm({ isInFlight }: Props) {
     }
   }, [lifecycle.endedAt]);
 
-  function flip() {
-    if (isInFlight) return;
-    setUsdcSide((s) => (s === "in" ? "out" : "in"));
+  /** Any change to the pair invalidates the amount, the venue choice and any
+   *  in-hand quote — clear them together rather than leaving a stale mix. */
+  function resetForPairChange() {
     setAmountInStr("");
     setVenueOverride(null);
     setSubmitError(null);
@@ -340,15 +466,32 @@ export function SwapForm({ isInFlight }: Props) {
     routerTx.reset();
   }
 
-  function selectPaired(symbol: TokenSymbol) {
-    if (isInFlight || symbol === "USDC") return;
-    setPairedToken(symbol as Exclude<TokenSymbol, "USDC">);
-    setAmountInStr("");
-    setVenueOverride(null);
-    setSubmitError(null);
-    createIntent.reset();
-    deposit.reset();
-    routerTx.reset();
+  function flip() {
+    if (isInFlight || !tokenOut) return;
+    const prevIn = tokenIn;
+    setTokenIn(tokenOut);
+    setTokenOut(prevIn);
+    resetForPairChange();
+  }
+
+  function selectTokenIn(t: ChainToken) {
+    if (isInFlight) return;
+    // Picking the token already on the other leg swaps them instead of
+    // producing an invalid same-token pair.
+    if (tokenOut && t.address.toLowerCase() === tokenOut.address.toLowerCase()) {
+      setTokenOut(tokenIn);
+    }
+    setTokenIn(t);
+    resetForPairChange();
+  }
+
+  function selectTokenOut(t: ChainToken) {
+    if (isInFlight) return;
+    if (t.address.toLowerCase() === tokenIn.address.toLowerCase()) {
+      setTokenIn(tokenOut ?? nativeToken(chain));
+    }
+    setTokenOut(t);
+    resetForPairChange();
   }
 
   // Native ETH pays its own gas, so MAX can't be the full balance or the deposit
@@ -388,7 +531,7 @@ export function SwapForm({ isInFlight }: Props) {
   // first, then confirm). The Kyber router path never takes permits — permit
   // pass-through isn't enabled for it, so it always uses plain approve.
   const usePermitFlow =
-    needsApprove && inInfo.supportsPermit && selected?.venue !== "KYBERSWAP";
+    needsApprove && inSupportsPermit && selected?.venue !== "KYBERSWAP";
 
   function pickQuote(set: MultiQuote | null | undefined): VenueQuote | null {
     if (!set) return null;
@@ -439,7 +582,7 @@ export function SwapForm({ isInFlight }: Props) {
       log({
         level: "info",
         channel: "QUOTE",
-        message: `submit ${q.venue} · ${fmtAmount(q.amountIn, q.amountInDecimals)} ${tokenIn} → min ${fmtAmount(q.amountOutMin, q.amountOutDecimals)} ${tokenOut}`,
+        message: `submit ${q.venue} · ${fmtAmount(q.amountIn, q.amountInDecimals)} ${inInfo.symbol} → min ${fmtAmount(q.amountOutMin, q.amountOutDecimals)} ${outInfo?.symbol ?? "?"}`,
       });
       if (q.venue === "KYBERSWAP") {
         await confirmKyber(q);
@@ -469,7 +612,7 @@ export function SwapForm({ isInFlight }: Props) {
         // server-side intent deadline. The permit lives only for this tx.
         const permitDeadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
         permit = await collectPermit({
-          token: inInfo,
+          token: permitTokenInfo!,
           // The quote's approval_address (the escrow on KALQIX) — same value
           // as network.escrowContract on the legacy path.
           spender: q.approvalAddress,
@@ -497,8 +640,11 @@ export function SwapForm({ isInFlight }: Props) {
     }
 
     const intent = await createIntent.mutateAsync({
+      // Multi-venue backends only: the legacy deployment predates chain_id and
+      // is pinned to Base, so sending it there risks a reject for no gain.
+      ...(network.venues ? { chain_id: chain.id } : {}),
       token_in: inInfo.address,
-      token_out: outInfo.address,
+      token_out: outInfo!.address,
       // KalqiX-aligned amount from the quote — may differ from the typed
       // input; permits and msg.value must match it exactly.
       amount_in: q.amountIn.toString(),
@@ -530,9 +676,20 @@ export function SwapForm({ isInFlight }: Props) {
     if (rs === undefined || JSON.stringify(rs) !== q.routeSummaryJson) {
       throw new Error("routeSummary integrity check failed — re-quote required.");
     }
+    // The API requires venue_detail.chainId === chain_id for KYBERSWAP. If a
+    // quote from a previous chain survived a switch, this catches it before we
+    // build a transaction against the wrong network.
+    const detailChainId = (q.venueDetail as { chainId?: number } | null)
+      ?.chainId;
+    if (detailChainId !== undefined && detailChainId !== chain.id) {
+      throw new Error(
+        `Quote is for chain ${detailChainId}, not ${chain.label} — re-quote required.`
+      );
+    }
     return {
+      chain_id: chain.id,
       token_in: inInfo.address,
-      token_out: outInfo.address,
+      token_out: outInfo!.address,
       amount_in: q.amountIn.toString(),
       amount_out: q.amountOutMin.toString(),
       amount_out_quote: q.amountOut.toString(),
@@ -541,6 +698,43 @@ export function SwapForm({ isInFlight }: Props) {
       venue_detail: q.venueDetail, // same parsed reference — never rebuilt
       user_wallet: address!, // tx sender below is this same connected wallet
     };
+  }
+
+  /**
+   * Gas limit for an aggregator router call: the larger of our own estimate and
+   * the route's own hint, then padded.
+   *
+   * A bare eth_estimateGas is NOT enough here. Measured case (Base, AAVE→USDC,
+   * tx 0x18892e4e…): the wallet sent 1,661,865 and the call reverted with
+   * KyberSwap's generic "Call failed" after consuming 97% of it; the identical
+   * calldata succeeds at 2,500,000. The router forwards only 63/64 of remaining
+   * gas to each executor, so an estimate that exactly covers the top-level call
+   * leaves an inner hop short, and the router reports that as a call failure
+   * rather than an out-of-gas. The route's own `gas` hint was lower still.
+   *
+   * Unused gas is refunded, so padding costs nothing but a higher displayed max.
+   */
+  const GAS_BUFFER_NUM = 8n; // ×1.6
+  const GAS_BUFFER_DEN = 5n;
+
+  async function routerGasLimit(
+    to: Address,
+    data: Hex,
+    value: bigint,
+    routeHint: bigint
+  ): Promise<bigint | undefined> {
+    try {
+      const est = publicClient
+        ? await publicClient.estimateGas({ account: address, to, data, value })
+        : 0n;
+      const base = est > routeHint ? est : routeHint;
+      if (base === 0n) return undefined;
+      return (base * GAS_BUFFER_NUM) / GAS_BUFFER_DEN;
+    } catch {
+      // Estimation reverting usually means the swap itself would fail; let the
+      // wallet estimate and surface its own error rather than forcing a limit.
+      return undefined;
+    }
   }
 
   async function confirmKyber(q: VenueQuote) {
@@ -568,10 +762,22 @@ export function SwapForm({ isInFlight }: Props) {
     }
     // Straight to the Kyber router from the connected wallet — no escrow, no
     // solver. transaction_value covers native-in swaps.
+    const value = BigInt(intent.transaction_value ?? "0");
+    const hint = BigInt(
+      (q.venueDetail as { routeSummary?: { gas?: number | string } } | null)
+        ?.routeSummary?.gas ?? 0
+    );
+    const gas = await routerGasLimit(
+      intent.contract_address,
+      intent.encoded_calldata,
+      value,
+      hint
+    );
     routerTx.deposit({
       to: intent.contract_address,
       data: intent.encoded_calldata,
-      value: BigInt(intent.transaction_value ?? "0"),
+      value,
+      ...(gas ? { gas } : {}),
     });
   }
 
@@ -586,6 +792,24 @@ export function SwapForm({ isInFlight }: Props) {
     ctaDisabled = true;
   } else if (!isConnected) {
     ctaLabel = "Connect wallet";
+    ctaDisabled = true;
+  } else if (walletChainId !== undefined && walletChainId !== chain.id) {
+    // Calldata is built for the selected chain. wagmi would also throw on
+    // broadcast, but blocking here keeps the user from signing a permit or an
+    // approval that targets the wrong network.
+    ctaLabel = `Switch wallet to ${chain.label}`;
+    ctaDisabled = true;
+  } else if (!outInfo) {
+    ctaLabel = "Select a token to receive";
+    ctaDisabled = true;
+  } else if (
+    outInfo.address.toLowerCase() === inInfo.address.toLowerCase()
+  ) {
+    ctaLabel = "Select two different tokens";
+    ctaDisabled = true;
+  } else if (!spender) {
+    // Only reachable once a venue quoted but returned no approval_address.
+    ctaLabel = "No approval address for this venue";
     ctaDisabled = true;
   } else if (permitSigning) {
     ctaLabel = "Awaiting permit signature…";
@@ -611,7 +835,7 @@ export function SwapForm({ isInFlight }: Props) {
     ctaLabel = "Enter an amount";
     ctaDisabled = true;
   } else if (typeof balance.data === "bigint" && amountIn > balance.data) {
-    ctaLabel = `Insufficient ${tokenIn}`;
+    ctaLabel = `Insufficient ${inInfo.symbol}`;
     ctaDisabled = true;
   } else if (network.venues && allowedVenues.length === 0) {
     ctaLabel = "Amount outside venue limits";
@@ -641,8 +865,8 @@ export function SwapForm({ isInFlight }: Props) {
     } else {
       ctaLabel =
         selected?.venue === "KYBERSWAP"
-          ? `Approve ${tokenIn} for router`
-          : `Approve ${tokenIn}`;
+          ? `Approve ${inInfo.symbol} for router`
+          : `Approve ${inInfo.symbol}`;
       ctaAction = () => approve.approve(inInfo.address, spender, amountIn);
     }
   }
@@ -685,6 +909,10 @@ export function SwapForm({ isInFlight }: Props) {
               : quickswapOnly && qsRoutingAvailable
                 ? "QuickSwap pools only"
                 : null,
+          // In flight AND nothing resolved for this venue yet. A venue that
+          // already has a quote or a failure keeps showing it through the 5s
+          // refresh rather than flickering back to a skeleton.
+          isLoading: quote.isFetching && !vq && !failure && !limitReason,
         };
       })
     : [];
@@ -734,7 +962,7 @@ export function SwapForm({ isInFlight }: Props) {
             {balance.data !== undefined
               ? fmtAmount(balance.data as bigint, inInfo.decimals, { minDp: 0 })
               : "—"}{" "}
-            {tokenIn}
+            {inInfo.symbol}
             {isConnected && balance.data !== undefined && !formDisabled ? (
               <button className="max" type="button" onClick={setMax}>
                 MAX
@@ -742,16 +970,19 @@ export function SwapForm({ isInFlight }: Props) {
             ) : null}
           </div>
         </div>
-        {inInfo.symbol === "USDC" ? (
-          <TokenPill token={inInfo} />
-        ) : (
-          <TokenSelect
-            value={inInfo}
-            options={pairedOptions}
-            onSelect={selectPaired}
-            disabled={formDisabled}
-          />
-        )}
+        <TokenSelect
+          value={inInfo}
+          options={tokens}
+          onSelect={selectTokenIn}
+          onResolveAddress={resolveAndAdd}
+          onSearchRemote={searchRemote}
+          excludeAddress={outInfo?.address}
+          loading={tokensLoading}
+          listUnavailable={listUnavailable}
+          quickswapListed={qsListedCount}
+          quickswapTotal={qsTotalCount}
+          disabled={formDisabled}
+        />
       </div>
 
       <div className="swap__divider">
@@ -775,26 +1006,31 @@ export function SwapForm({ isInFlight }: Props) {
           <input
             className="swap__amount"
             value={
-              selected ? fmtAmount(selected.amountOut, outInfo.decimals) : ""
+              selected && outInfo
+                ? fmtAmount(selected.amountOut, outInfo.decimals)
+                : ""
             }
             placeholder="0.00"
             readOnly
             disabled={formDisabled}
           />
           <div className="swap__balance">
-            Balance — <span style={{ marginLeft: 4 }}>{tokenOut}</span>
+            Balance — <span style={{ marginLeft: 4 }}>{outInfo?.symbol ?? "—"}</span>
           </div>
         </div>
-        {outInfo.symbol === "USDC" ? (
-          <TokenPill token={outInfo} />
-        ) : (
-          <TokenSelect
-            value={outInfo}
-            options={pairedOptions}
-            onSelect={selectPaired}
-            disabled={formDisabled}
-          />
-        )}
+        <TokenSelect
+          value={outInfo}
+          options={tokens}
+          onSelect={selectTokenOut}
+          onResolveAddress={resolveAndAdd}
+          onSearchRemote={searchRemote}
+          excludeAddress={inInfo.address}
+          loading={tokensLoading}
+          listUnavailable={listUnavailable}
+          quickswapListed={qsListedCount}
+          quickswapTotal={qsTotalCount}
+          disabled={formDisabled}
+        />
       </div>
 
       {/* Details */}
@@ -803,7 +1039,6 @@ export function SwapForm({ isInFlight }: Props) {
           <VenueQuoteCards
             models={venueCards}
             outInfo={outInfo}
-            pairedToken={pairedToken}
             onSelect={setVenueOverride}
             disabled={formDisabled}
           />
@@ -812,8 +1047,8 @@ export function SwapForm({ isInFlight }: Props) {
           <div className="swap__line">
             <span>{selected?.side === "BUY" ? "Best ask" : "Best bid"}</span>
             <b className="num">
-              {selected
-                ? `${selected.priceHuman.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC / ${pairedToken}`
+              {selected && outInfo
+                ? `${selected.priceHuman.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${inInfo.symbol} / ${outInfo.symbol}`
                 : "—"}
             </b>
           </div>
@@ -829,17 +1064,17 @@ export function SwapForm({ isInFlight }: Props) {
         <div className="swap__line">
           <span>Min received</span>
           <b className="num">
-            {selected
-              ? `${fmtAmount(selected.amountOutMin, outInfo.decimals)} ${tokenOut}`
+            {selected && outInfo
+              ? `${fmtAmount(selected.amountOutMin, outInfo.decimals)} ${outInfo.symbol}`
               : "—"}
           </b>
         </div>
         {showKyberBenchmark ? (
           <div className="swap__line">
             <span>Kyberswap est.</span>
-            {kyber.data ? (
+            {kyber.data && outInfo ? (
               <span className="num">
-                {fmtAmount(kyber.data.amountOut, outInfo.decimals)} {tokenOut}
+                {fmtAmount(kyber.data.amountOut, outInfo.decimals)} {outInfo.symbol}
                 {kyberDeviationBps !== null ? (
                   <span
                     className={`swap__dev ${kyberDeviationBps >= 0 ? "is-better" : "is-worse"}`}
@@ -852,6 +1087,22 @@ export function SwapForm({ isInFlight }: Props) {
               </span>
             ) : kyber.isError ? (
               <span className="err">unavailable</span>
+            ) : (
+              <span className="num">…</span>
+            )}
+          </div>
+        ) : null}
+        {quickswapOnly && qsRoutingAvailable ? (
+          <div className="swap__line">
+            <span>QuickSwap-only vs open routing</span>
+            {qsCostBps !== null ? (
+              <b className={`num swap__dev ${qsCostBps <= 0 ? "is-better" : "is-worse"}`}>
+                {qsCostBps <= 0 ? "+" : "−"}
+                {(Math.abs(qsCostBps) / 100).toFixed(2)}%{" "}
+                {qsCostBps <= 0 ? "better" : "cost"}
+              </b>
+            ) : openQuote.isError ? (
+              <span className="err">benchmark unavailable</span>
             ) : (
               <span className="num">…</span>
             )}

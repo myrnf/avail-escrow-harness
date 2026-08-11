@@ -6,7 +6,7 @@ import { shortHash } from "../lib/format";
 import { useActivityLog } from "../store/activityLog";
 import { type StepKey, type TimingStep } from "../store/intentTiming";
 import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
-import { useActiveNetwork } from "../hooks/useActiveNetwork";
+import { useActiveDeployment } from "../hooks/useSession";
 
 
 // "submit" is the timeline anchor used to compute the first phase duration —
@@ -64,7 +64,7 @@ function fmtMs(ms: number): string {
 }
 
 export function IntentPanel() {
-  const network = useActiveNetwork();
+  const network = useActiveDeployment();
   const lifecycle = useCurrentLifecycle();
   const isKyber = lifecycle.venue === "KYBERSWAP";
   // KYBERSWAP swaps have no backend lifecycle — never poll /v2/intent for

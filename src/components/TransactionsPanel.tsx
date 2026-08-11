@@ -1,8 +1,10 @@
 import { Panel, PanelStatus } from "./primitives/Panel";
 import { useIntentStatus } from "../hooks/useIntent";
 import { useCurrentLifecycle } from "../hooks/useCurrentLifecycle";
-import { useActiveNetwork } from "../hooks/useActiveNetwork";
-import { txExplorerUrl, type NetworkConfig } from "../config/networks";
+import { useActiveChain, useActiveDeployment } from "../hooks/useSession";
+import type { Deployment } from "../config/deployments";
+import type { ChainConfig } from "../config/chains";
+import { txExplorerUrl } from "../config/chains";
 import { TOKEN_META, getToken } from "../config/tokens";
 import type { TokenInfo, TokenSymbol } from "../config/tokens";
 import { fmtAmount, shortHash } from "../lib/format";
@@ -58,12 +60,12 @@ function settlementRows(s: IntentStatusView["settlement"]): Row[] {
 /** Local lookup: TokenInfo for an address on the active network, or null
  *  if the address isn't a known harness token. */
 function tokenInfoByAddress(
-  network: NetworkConfig,
+  network: Deployment,
   addr: Address
 ): TokenInfo | null {
   const lower = addr.toLowerCase();
   for (const sym of Object.keys(TOKEN_META) as TokenSymbol[]) {
-    if (network.tokens[sym].toLowerCase() === lower) {
+    if (network.kalqixTokens[sym].toLowerCase() === lower) {
       return getToken(network, sym);
     }
   }
@@ -86,11 +88,13 @@ function fmtSignedPct(actual: bigint, baseline: bigint): string {
 function ExecutionView({
   view,
   network,
+  chain,
   depositTxHash,
   kyberAmountOut,
 }: {
   view: IntentStatusView;
-  network: NetworkConfig;
+  network: Deployment;
+  chain: ChainConfig;
   depositTxHash: string | null;
   kyberAmountOut: string | null;
 }) {
@@ -213,7 +217,7 @@ function ExecutionView({
           {depositTxHash ? (
             <a
               className="exec__txlink"
-              href={txExplorerUrl(network, depositTxHash)}
+              href={txExplorerUrl(chain, depositTxHash)}
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -223,7 +227,7 @@ function ExecutionView({
           {view.settlement.txHash ? (
             <a
               className="exec__txlink"
-              href={txExplorerUrl(network, view.settlement.txHash)}
+              href={txExplorerUrl(chain, view.settlement.txHash)}
               target="_blank"
               rel="noopener noreferrer"
             >
@@ -241,7 +245,8 @@ export function TransactionsPanel() {
   const isKyber = lifecycle.venue === "KYBERSWAP";
   // KYBERSWAP swaps have no backend lifecycle — never poll for them.
   const status = useIntentStatus(isKyber ? null : lifecycle.intentId);
-  const network = useActiveNetwork();
+  const network = useActiveDeployment();
+  const chain = useActiveChain();
   const data = status.data;
 
   // Deposit tx hash lives in the lifecycle store — recorded by SwapForm as
@@ -262,6 +267,7 @@ export function TransactionsPanel() {
         <ExecutionView
           view={data}
           network={network}
+          chain={chain}
           depositTxHash={depositTxHash}
           kyberAmountOut={lifecycle.kyberAmountOut}
         />
@@ -334,7 +340,7 @@ export function TransactionsPanel() {
             <a
               key={i}
               className="txlist__row"
-              href={txExplorerUrl(network, r.hash)}
+              href={txExplorerUrl(chain, r.hash)}
               target="_blank"
               rel="noopener noreferrer"
             >

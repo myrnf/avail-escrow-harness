@@ -1,5 +1,5 @@
 import type { Address } from "viem";
-import type { Venue } from "../../config/networks";
+import type { Venue } from "../../config/deployments";
 
 /** Thrown when the backend has stopped intake (HTTP 503 or an explicit
  *  SERVICE_UNAVAILABLE error code). Rendered as "intake stopped" in the UI. */
@@ -49,7 +49,7 @@ export interface AvailQuoteVenueV2 {
   error_message?: string | null;
 }
 
-/** Avail GET /v2/quote response. `quotes` is ordered best-first (descending
+/** Avail POST /v2/quote response. `quotes` is ordered best-first (descending
  *  amount_out); a 200 can still contain per-venue failures. */
 export interface AvailQuoteV2Response {
   id: string;
@@ -68,6 +68,7 @@ export interface VenueQuoteOption {
 }
 
 interface Params {
+  chainId: number;
   tokenIn: Address;
   tokenOut: Address;
   amountIn: bigint;
@@ -76,31 +77,38 @@ interface Params {
   venueOptions?: VenueQuoteOption[];
 }
 
+/** The server's body limit for this endpoint. Exceeding it returns 413 with a
+ *  text/plain body rather than the JSON error envelope, so we'd lose the error
+ *  shape — cheaper to catch it here. A typical request with two
+ *  `included_sources` lands at ~310 bytes, so this only bites if that list
+ *  grows a lot. */
+const MAX_BODY_BYTES = 512;
+
+/** Thrown when the requested chain is outside the API's `chain_id` enum. */
+export class BadChainIdError extends Error {
+  constructor(message = "Chain not supported by this deployment") {
+    super(message);
+    this.name = "BadChainIdError";
+  }
+}
+
 /**
- * Fetch a multi-venue quote from Avail's GET /v2/quote. CORS-open like v1, so
- * called directly from the browser. Addresses are lowercased to match Avail's
+ * Fetch a multi-venue quote from Avail's POST /v2/quote. CORS-open, so called
+ * directly from the browser. Addresses are lowercased to match Avail's
  * case-sensitive asset registry (same as the intent client).
  *
- * The two array params (`whitelisted_venues`, `venue_options`) are sent with
- * literal-bracket, serde_qs-style keys — the only shape that doesn't 400 on
- * the deployed build. Brackets are left unencoded on purpose: URLSearchParams
- * would percent-encode them to %5B/%5D, which the server reads as part of the
- * key name.
- *
- * KNOWN GAP (canary + testnet, verified 2026-07-29): neither array param
- * reaches the handler on the deployed build. Non-bracketed values 400 with
- * "invalid type: string, expected a sequence"; bracketed values are dropped
- * silently — `whitelisted_venues[]=HELLO` returns 200 instead of the spec's
- * BAD_WHITELISTED_VENUES, and a bogus venue_options field returns 200 despite
- * `additionalProperties: false`. Scalars (slippage_bps) parse fine and JSON
- * bodies handle arrays fine, so it's query-string sequences specifically.
- * Callers must therefore verify the response rather than trust the request:
- * see honorsSources() for the KYBERSWAP route check, and the client-side
- * venue filter in useQuote. Both become no-ops once the params take effect.
+ * JSON body, not query params. The pre-v0.2.0 client used GET with
+ * serde_qs-style bracket keys, where `whitelisted_venues[]` and `venue_options`
+ * were silently dropped by the server — which forced a client-side venue filter
+ * and made source restriction unverifiable. Both bind correctly on POST
+ * (verified 2026-08-10: `whitelisted_venues: ["HELLO"]` → 400
+ * BAD_WHITELISTED_VENUES, and `included_sources` visibly constrains the
+ * returned route), so those workarounds are gone.
  */
 export async function getAvailQuoteV2(
   baseUrl: string,
   {
+    chainId,
     tokenIn,
     tokenOut,
     amountIn,
@@ -109,36 +117,55 @@ export async function getAvailQuoteV2(
     venueOptions,
   }: Params
 ): Promise<AvailQuoteV2Response> {
-  const parts = [
-    `token_in=${tokenIn.toLowerCase()}`,
-    `token_out=${tokenOut.toLowerCase()}`,
-    `amount_in=${amountIn.toString()}`,
-    `slippage_bps=${slippageBps}`,
-  ];
-  whitelistedVenues.forEach((v) => parts.push(`whitelisted_venues[]=${v}`));
-  venueOptions?.forEach((vo, i) => {
-    parts.push(`venue_options[${i}][name]=${vo.name}`);
-    vo.includedSources?.forEach((s, j) =>
-      parts.push(
-        `venue_options[${i}][option][included_sources][${j}]=${encodeURIComponent(s)}`
-      )
-    );
+  const body = JSON.stringify({
+    chain_id: chainId,
+    token_in: tokenIn.toLowerCase(),
+    token_out: tokenOut.toLowerCase(),
+    amount_in: amountIn.toString(),
+    slippage_bps: slippageBps,
+    ...(whitelistedVenues.length
+      ? { whitelisted_venues: whitelistedVenues }
+      : {}),
+    ...(venueOptions?.length
+      ? {
+          venue_options: venueOptions.map((vo) => ({
+            venue_name: vo.name,
+            option: vo.includedSources?.length
+              ? { included_sources: vo.includedSources }
+              : null,
+          })),
+        }
+      : {}),
   });
-  const res = await fetch(
-    `${baseUrl.replace(/\/$/, "")}/v2/quote?${parts.join("&")}`
-  );
+
+  const bytes = new TextEncoder().encode(body).length;
+  if (bytes > MAX_BODY_BYTES) {
+    throw new Error(
+      `/v2/quote body is ${bytes} bytes, over the server's ${MAX_BODY_BYTES}-byte limit`
+    );
+  }
+
+  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/v2/quote`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+  });
   const text = await res.text();
-  let body: AvailQuoteV2Response;
+  let parsed: AvailQuoteV2Response;
   try {
     // Both success and request-level errors come back as JSON (with
-    // error_code); the caller inspects error_code / quotes.
-    body = JSON.parse(text) as AvailQuoteV2Response;
+    // error_code); the caller inspects error_code / quotes. 413/415/422 are
+    // text/plain and fall through to the catch.
+    parsed = JSON.parse(text) as AvailQuoteV2Response;
   } catch {
     if (res.status === 503) throw new ServiceUnavailableError();
     throw new Error(`/v2/quote ${res.status}: ${text.slice(0, 160)}`);
   }
-  if (res.status === 503 || body.error_code === "SERVICE_UNAVAILABLE") {
-    throw new ServiceUnavailableError(body.error_message ?? undefined);
+  if (res.status === 503 || parsed.error_code === "SERVICE_UNAVAILABLE") {
+    throw new ServiceUnavailableError(parsed.error_message ?? undefined);
   }
-  return body;
+  if (parsed.error_code === "BAD_CHAIN_ID") {
+    throw new BadChainIdError(parsed.error_message ?? undefined);
+  }
+  return parsed;
 }

@@ -1,11 +1,16 @@
 import type { Address, Hex } from "viem";
-import type { Venue } from "../../config/networks";
+import type { Venue } from "../../config/deployments";
 
 // ─────────────────────────────────────────────────────────────────────────
 // POST /intent
 // ─────────────────────────────────────────────────────────────────────────
 
 export interface CreateIntentRequest {
+  /** EVM chain to execute on. The API defaults to Base (8453) when omitted,
+   *  but we always send it — a deployment that ignores the field is a
+   *  wrong-chain quote wearing a 200, so being explicit costs nothing and the
+   *  probe script can assert on it. */
+  chain_id?: number;
   token_in: Address;
   token_out: Address;
   amount_in: string;
@@ -56,6 +61,7 @@ export type IntentErrorCode =
   | "BAD_VENUE"
   | "BAD_VENUE_DETAIL"
   | "BAD_USER_WALLET"
+  | "BAD_CHAIN_ID"
   | "SERVICE_UNAVAILABLE"
   | (string & {});
 

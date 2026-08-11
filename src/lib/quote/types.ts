@@ -26,7 +26,7 @@ export interface KalqiXMarketPrice {
 }
 
 import type { Address } from "viem";
-import type { Venue } from "../../config/networks";
+import type { Venue } from "../../config/deployments";
 
 export type Side = "BUY" | "SELL";
 

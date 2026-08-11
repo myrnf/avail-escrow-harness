@@ -6,7 +6,7 @@ import {
   recoverAddress,
 } from "viem";
 import { useAccount, usePublicClient, useSignTypedData } from "wagmi";
-import { useActiveNetwork } from "./useActiveNetwork";
+import { useActiveChain } from "./useSession";
 import { useActivityLog } from "../store/activityLog";
 import type { TokenInfo } from "../config/tokens";
 
@@ -68,8 +68,8 @@ interface CollectPermitInput {
  */
 export function usePermit() {
   const { address: owner } = useAccount();
-  const network = useActiveNetwork();
-  const publicClient = usePublicClient({ chainId: network.chain.id });
+  const chain = useActiveChain();
+  const publicClient = usePublicClient({ chainId: chain.chain.id });
   const { signTypedDataAsync } = useSignTypedData();
   const log = useActivityLog((s) => s.push);
 
@@ -106,7 +106,7 @@ export function usePermit() {
       domain = {
         name,
         version: token.permitDomainVersion,
-        chainId: network.chain.id,
+        chainId: chain.chain.id,
         verifyingContract: token.address,
       };
     }
