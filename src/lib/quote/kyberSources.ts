@@ -1,7 +1,7 @@
 /**
  * Verification for source-restricted KYBERSWAP quotes.
  *
- * `venue_options[].option.included_sources` is a request-side ask: the server
+ * `kyberswap.route_options.included_sources` is a request-side ask: the server
  * forwards it to Kyber, and nothing in the response states which restriction
  * was applied. But a Kyber `routeSummary` names the pool behind every hop, so
  * the answer is already in the payload — read the route back and confirm it
@@ -19,9 +19,9 @@
 
 /** Every distinct pool/dex id used across a routeSummary's hops. */
 export function routeExchanges(
-  venueDetail: { routeSummary?: unknown } | null | undefined
+  ctx: { routeSummary?: unknown } | null | undefined
 ): string[] {
-  const rs = venueDetail?.routeSummary as
+  const rs = ctx?.routeSummary as
     | { route?: Array<Array<{ exchange?: unknown }>> }
     | undefined;
   if (!Array.isArray(rs?.route)) return [];
@@ -39,9 +39,9 @@ export function routeExchanges(
  *  held (also empty when the route can't be read, which is not evidence of
  *  a violation). */
 export function disallowedExchanges(
-  venueDetail: { routeSummary?: unknown } | null | undefined,
+  ctx: { routeSummary?: unknown } | null | undefined,
   allowed: string[]
 ): string[] {
   const permitted = new Set(allowed);
-  return routeExchanges(venueDetail).filter((e) => !permitted.has(e));
+  return routeExchanges(ctx).filter((e) => !permitted.has(e));
 }

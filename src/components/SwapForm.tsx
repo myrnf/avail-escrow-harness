@@ -11,13 +11,14 @@ import {
   DEFAULT_SLIPPAGE_BPS,
   SLIPPAGE_PRESETS_BPS,
   QUOTE_TTL_MS,
+  CALLDATA_EXPIRY_MARGIN_MS,
 } from "../config/avail";
 import { venueEnabled, type Venue } from "../config/deployments";
 import { useQuote } from "../hooks/useQuote";
 import { useKyberQuote } from "../hooks/useKyberQuote";
 import { useSupportedTokens } from "../hooks/useSupportedTokens";
 import { useInputBalance, useTokenAllowance, useApprove } from "../hooks/useErc20";
-import { useCreateIntent } from "../hooks/useIntent";
+import { useCreateIntent, useCreateIntentFromQuote } from "../hooks/useIntent";
 import { useDeposit } from "../hooks/useDeposit";
 import { useActiveChain, useActiveDeployment } from "../hooks/useSession";
 import { useChainTokens } from "../hooks/useChainTokens";
@@ -59,6 +60,12 @@ export function SwapForm({ isInFlight }: Props) {
   const [tokenOut, setTokenOut] = useState<ChainToken | null>(null);
   const [amountInStr, setAmountInStr] = useState("");
   const [slippageBps, setSlippageBps] = useState<number>(DEFAULT_SLIPPAGE_BPS);
+  /** Where executable calldata comes from. "prefetch" asks every poll for it
+   *  (API v0.3.0 `create_calldata`) so confirm goes straight to the wallet;
+   *  "confirm" keeps the pre-0.3.0 shape where POST /intent returns it. The
+   *  variable this harness exists to measure. */
+  const [calldataMode, setCalldataMode] =
+    useState<"prefetch" | "confirm">("prefetch");
   // null = auto (best venue); set when the user picks a card explicitly.
   const [venueOverride, setVenueOverride] = useState<Venue | null>(null);
   // Restrict Kyber routing to QuickSwap's pools, reproducing what a
@@ -125,6 +132,33 @@ export function SwapForm({ isInFlight }: Props) {
     .filter((s) => !s.reason)
     .map((s) => s.venue);
 
+  /**
+   * Venues to request calldata for on every poll.
+   *
+   * KALQIX is excluded whenever the input token supports EIP-2612 on this
+   * deployment. Its deposit calldata bakes the permit in at QUOTE time, but the
+   * signature is collected after confirm — it cannot precede the thing it
+   * signs. Keyed on `inSupportsPermit` rather than "does this swap need a
+   * permit right now" deliberately: the allowance-dependent version flips as
+   * approvals land, and each flip re-requests calldata the server has to build
+   * and then retain. Better to skip pre-fetch for those tokens than to churn
+   * builds we would discard.
+   *
+   * KYBERSWAP requires `user_wallet`, so it is unavailable until connected.
+   */
+  // Only testnet differs: its backend rejects 84532 and registers its Base
+  // Sepolia assets under 8453, so every API call uses this while the wallet
+  // transaction stays pinned to chain.id.
+  const quoteChainId = network.quoteChainId ?? chain.id;
+
+  const calldataFor = useMemo<Venue[]>(() => {
+    if (calldataMode !== "prefetch" || !network.venues) return [];
+    const out: Venue[] = [];
+    if (!inSupportsPermit) out.push("KALQIX");
+    if (address) out.push("KYBERSWAP");
+    return out;
+  }, [calldataMode, network.venues, inSupportsPermit, address]);
+
   const quote = useQuote({
     tokenIn,
     tokenOut,
@@ -133,6 +167,8 @@ export function SwapForm({ isInFlight }: Props) {
     venues: network.venues ? allowedVenues : undefined,
     quickswapOnly,
     enabled: amountIn > 0n && !isInFlight,
+    calldataFor,
+    userWallet: address,
   });
   const quotes = quote.data?.quotes ?? [];
 
@@ -217,6 +253,7 @@ export function SwapForm({ isInFlight }: Props) {
 
   const approve = useApprove();
   const createIntent = useCreateIntent();
+  const intentFromQuote = useCreateIntentFromQuote();
   const deposit = useDeposit();
   const routerTx = useDeposit({
     sent: "router swap sent",
@@ -235,6 +272,19 @@ export function SwapForm({ isInFlight }: Props) {
   }, [selected?.fetchedAt]);
   const secondsToRefresh = selected
     ? Math.max(0, 5 - Math.floor((Date.now() - selected.fetchedAt) / 1000))
+    : null;
+
+  // Calldata's own clock, recomputed on the same 1s tick as the refresh
+  // countdown. Surfaced only when pre-fetch is on AND calldata is actually
+  // held: it is the one piece of state that can invalidate a confirm while the
+  // price still looks perfectly fresh.
+  const showCalldataClock =
+    calldataMode === "prefetch" && !!selected?.calldata;
+  const calldataSecondsLeft = selected?.calldata
+    ? Math.max(
+        0,
+        Math.floor((selected.calldata.expires_at_ms - Date.now()) / 1000)
+      )
     : null;
 
   // Hard staleness (QUOTE_TTL_MS from quoted_at). The 5s refresh keeps quotes
@@ -359,6 +409,23 @@ export function SwapForm({ isInFlight }: Props) {
       });
     }
   }, [createIntent.isSuccess, createIntent.data?.id]);
+
+  // Quote-consuming POST /intent returned. Recorded under the same step key as
+  // the payload form so both modes produce directly comparable timelines —
+  // the difference being that this one resolves after the wallet is already
+  // open, rather than blocking it.
+  useEffect(() => {
+    if (intentFromQuote.isSuccess && intentFromQuote.data) {
+      lifecycle.setIntentId(intentFromQuote.data.id);
+      lifecycle.recordStep({
+        key: "createIntent",
+        at: Date.now(),
+        label: "POST /intent (quote_id)",
+        ok: true,
+        detail: "in parallel with wallet tx",
+      });
+    }
+  }, [intentFromQuote.isSuccess, intentFromQuote.data?.id]);
 
   // deposit tx broadcast → record + clear the form. Once the user has signed
   // the deposit there's no rolling back this swap, so the form should be
@@ -542,12 +609,44 @@ export function SwapForm({ isInFlight }: Props) {
     );
   }
 
+  /** Calldata carries its own expiry, independent of quote staleness — a
+   *  backgrounded tab can hold a quote that still looks fresh whose calldata
+   *  has lapsed. Usable means present, bound to a quote we can consume, and
+   *  with margin left on that clock. */
+  function calldataUsable(q: VenueQuote | null | undefined): boolean {
+    return (
+      !!q?.calldata &&
+      !!q.quoteId &&
+      Date.now() < q.calldata.expires_at_ms - CALLDATA_EXPIRY_MARGIN_MS
+    );
+  }
+
+  /** Whether this venue's confirm should go straight to the wallet. KALQIX
+   *  falls back whenever a permit is in play: that calldata was built without
+   *  one, because the signature cannot precede the thing it signs. */
+  function willUsePrefetched(q: VenueQuote): boolean {
+    if (!calldataFor.includes(q.venue)) return false;
+    if (q.venue === "KALQIX" && usePermitFlow) return false;
+    return calldataUsable(q);
+  }
+
   /** Never-submit-stale invariant: refetch when the in-hand quote is older
    *  than QUOTE_TTL_MS, and never fall back to a stale set if the refetch
-   *  fails. Strictest requirement is KYBERSWAP's routeSummary. */
+   *  fails. Strictest requirement is KYBERSWAP's routeSummary.
+   *
+   *  In pre-fetch mode lapsed calldata counts as stale too, so an expired
+   *  window re-quotes rather than silently degrading to the slower path. */
   async function resolveFreshQuote(): Promise<VenueQuote> {
     let q = pickQuote(quote.data);
-    if (!q || Date.now() - q.fetchedAt >= QUOTE_TTL_MS) {
+    const wantsCalldata =
+      !!q &&
+      calldataFor.includes(q.venue) &&
+      !(q.venue === "KALQIX" && usePermitFlow);
+    if (
+      !q ||
+      Date.now() - q.fetchedAt >= QUOTE_TTL_MS ||
+      (wantsCalldata && !calldataUsable(q))
+    ) {
       const fresh = await quote.refetch();
       q = pickQuote(fresh.data);
     }
@@ -603,7 +702,67 @@ export function SwapForm({ isInFlight }: Props) {
     }
   }
 
+  /** Timeline marker for a confirm that needed no pre-wallet round-trip. Sits
+   *  where "POST /intent" sits on the slow path, so the two are comparable. */
+  function recordPrefetchStep(q: VenueQuote) {
+    const left = Math.round((q.calldata!.expires_at_ms - Date.now()) / 1000);
+    lifecycle.recordStep({
+      key: "calldata",
+      at: Date.now(),
+      label: "Calldata pre-fetched with quote",
+      ok: true,
+      detail: `expires in ${left}s`,
+    });
+  }
+
+  /**
+   * Fire the quote-consuming POST /intent alongside the wallet transaction.
+   *
+   * Deliberately not awaited: we already hold the calldata, so the only thing
+   * this response adds is the intent id for lifecycle polling. Awaiting it
+   * would reintroduce exactly the round-trip pre-fetching removes.
+   *
+   * A rejection therefore does NOT fail the swap — but it is a
+   * recoverable-and-silent failure, so it is logged loudly with the quote_id
+   * that identifies the reserved intent. On KALQIX a deposit whose intent never
+   * persisted unlocks back to the depositor after expiry; this line is how
+   * you'd know to expect that rather than a settlement.
+   */
+  function persistIntentInParallel(q: VenueQuote) {
+    intentFromQuote
+      .mutateAsync({
+        quote_id: q.quoteId!,
+        venue: q.venue,
+        client_intent_id: `harness-${Date.now()}`,
+      })
+      .catch((e: Error) => {
+        log({
+          level: "err",
+          channel: "API",
+          message: `POST /intent (quote_id) failed · ${q.venue} · ${e.message}`,
+          details:
+            q.venue === "KALQIX"
+              ? `quote_id ${q.quoteId} · if the deposit landed it has no persisted intent and unlocks to the depositor after expiry`
+              : `quote_id ${q.quoteId} · router swap is unaffected; only the intent record is missing`,
+        });
+      });
+  }
+
   async function confirmKalqix(q: VenueQuote) {
+    // Pre-fetched: calldata is already in hand, so the wallet opens with no
+    // server round-trip and POST /intent runs alongside it.
+    if (willUsePrefetched(q)) {
+      const cd = q.calldata!;
+      recordPrefetchStep(q);
+      persistIntentInParallel(q);
+      deposit.deposit({
+        to: cd.contract_address,
+        data: cd.encoded_calldata,
+        value: inInfo.isNative ? q.amountIn : 0n,
+      });
+      return;
+    }
+
     let permit: string | null = null;
     if (usePermitFlow && address) {
       try {
@@ -642,7 +801,7 @@ export function SwapForm({ isInFlight }: Props) {
     const intent = await createIntent.mutateAsync({
       // Multi-venue backends only: the legacy deployment predates chain_id and
       // is pinned to Base, so sending it there risks a reject for no gain.
-      ...(network.venues ? { chain_id: chain.id } : {}),
+      ...(network.venues ? { chain_id: quoteChainId } : {}),
       token_in: inInfo.address,
       token_out: outInfo!.address,
       // KalqiX-aligned amount from the quote — may differ from the typed
@@ -669,25 +828,25 @@ export function SwapForm({ isInFlight }: Props) {
   }
 
   function buildKyberBody(q: VenueQuote): CreateIntentRequest {
-    const rs = q.venueDetail?.routeSummary;
+    const rs = q.executionContext?.routeSummary;
     // Acceptance requirement: routeSummary must reach POST /intent verbatim.
     // Deep-equality check against the parse-time snapshot catches any
     // accidental mutation between quote and submit.
     if (rs === undefined || JSON.stringify(rs) !== q.routeSummaryJson) {
       throw new Error("routeSummary integrity check failed — re-quote required.");
     }
-    // The API requires venue_detail.chainId === chain_id for KYBERSWAP. If a
-    // quote from a previous chain survived a switch, this catches it before we
-    // build a transaction against the wrong network.
-    const detailChainId = (q.venueDetail as { chainId?: number } | null)
-      ?.chainId;
-    if (detailChainId !== undefined && detailChainId !== chain.id) {
+    // The API requires execution_context.chainId === chain_id for KYBERSWAP.
+    // If a quote from a previous chain survived a switch, this catches it
+    // before we build a transaction against the wrong network. Compared
+    // against quoteChainId, not chain.id — on testnet those differ by design.
+    const ctxChainId = q.executionContext?.chainId;
+    if (ctxChainId !== undefined && ctxChainId !== quoteChainId) {
       throw new Error(
-        `Quote is for chain ${detailChainId}, not ${chain.label} — re-quote required.`
+        `Quote is for chain ${ctxChainId}, not ${chain.label} — re-quote required.`
       );
     }
     return {
-      chain_id: chain.id,
+      chain_id: quoteChainId,
       token_in: inInfo.address,
       token_out: outInfo!.address,
       amount_in: q.amountIn.toString(),
@@ -695,7 +854,7 @@ export function SwapForm({ isInFlight }: Props) {
       amount_out_quote: q.amountOut.toString(),
       client_intent_id: `harness-${Date.now()}`,
       venue: "KYBERSWAP",
-      venue_detail: q.venueDetail, // same parsed reference — never rebuilt
+      execution_context: q.executionContext, // same parsed reference — never rebuilt
       user_wallet: address!, // tx sender below is this same connected wallet
     };
   }
@@ -737,19 +896,48 @@ export function SwapForm({ isInFlight }: Props) {
     }
   }
 
+  /** The route's own gas hint, read off the opaque routeSummary. */
+  function routeGasHint(q: VenueQuote): bigint {
+    const rs = (q.executionContext?.routeSummary ?? null) as {
+      gas?: number | string;
+    } | null;
+    return BigInt(rs?.gas ?? 0);
+  }
+
   async function confirmKyber(q: VenueQuote) {
     if (!address) throw new Error("Wallet not connected");
+    // Pre-fetched: straight to the router. The estimateGas below is now the
+    // only pre-wallet round-trip left on this path.
+    if (willUsePrefetched(q)) {
+      const cd = q.calldata!;
+      const value = BigInt(cd.transaction_value ?? "0");
+      recordPrefetchStep(q);
+      persistIntentInParallel(q);
+      const gas = await routerGasLimit(
+        cd.contract_address,
+        cd.encoded_calldata,
+        value,
+        routeGasHint(q)
+      );
+      routerTx.deposit({
+        to: cd.contract_address,
+        data: cd.encoded_calldata,
+        value,
+        ...(gas ? { gas } : {}),
+      });
+      return;
+    }
     let intent;
     try {
       intent = await createIntent.mutateAsync(buildKyberBody(q));
     } catch (e) {
-      // BAD_VENUE_DETAIL = the backend judged the route stale/mangled.
+      // BAD_EXECUTION_CONTEXT = the backend judged the route stale/mangled.
       // Re-quote and retry exactly once with the fresh routeSummary.
-      if (e instanceof AvailIntentError && e.kind === "BAD_VENUE_DETAIL") {
+      if (e instanceof AvailIntentError && e.kind === "BAD_EXECUTION_CONTEXT") {
         log({
           level: "warn",
           channel: "API",
-          message: "BAD_VENUE_DETAIL · re-quoting and retrying once",
+          message: "BAD_EXECUTION_CONTEXT · re-quoting and retrying once",
         });
         const fresh = await quote.refetch();
         const q2 =
@@ -763,15 +951,11 @@ export function SwapForm({ isInFlight }: Props) {
     // Straight to the Kyber router from the connected wallet — no escrow, no
     // solver. transaction_value covers native-in swaps.
     const value = BigInt(intent.transaction_value ?? "0");
-    const hint = BigInt(
-      (q.venueDetail as { routeSummary?: { gas?: number | string } } | null)
-        ?.routeSummary?.gas ?? 0
-    );
     const gas = await routerGasLimit(
       intent.contract_address,
       intent.encoded_calldata,
       value,
-      hint
+      routeGasHint(q)
     );
     routerTx.deposit({
       to: intent.contract_address,
@@ -1108,6 +1292,16 @@ export function SwapForm({ isInFlight }: Props) {
             )}
           </div>
         ) : null}
+        {showCalldataClock ? (
+          <div className="swap__line">
+            <span>Calldata expires</span>
+            <span className="num">
+              {calldataSecondsLeft && calldataSecondsLeft > 0
+                ? `in ${calldataSecondsLeft}s`
+                : "expired — re-quoting"}
+            </span>
+          </div>
+        ) : null}
         <div className="swap__line">
           <span>Quote refresh</span>
           <span className="num">
@@ -1145,6 +1339,29 @@ export function SwapForm({ isInFlight }: Props) {
             onClick={() => !formDisabled && setQuickswapOnly((v) => !v)}
           >
             QuickSwap pools only
+          </Chip>
+        </div>
+      ) : null}
+
+      {/* Calldata source — the variable this harness exists to measure.
+          "every quote" pre-fetches executable calldata on every poll so confirm
+          goes straight to the wallet with no server round-trip; "on confirm"
+          is the older shape where POST /intent returns it. The legacy mainnet
+          backend has no calldata-on-quote, so it isn't offered there. */}
+      {network.venues ? (
+        <div className="swap__slip">
+          <span className="swap__slip-label">Calldata</span>
+          <Chip
+            active={calldataMode === "prefetch"}
+            onClick={() => !formDisabled && setCalldataMode("prefetch")}
+          >
+            every quote
+          </Chip>
+          <Chip
+            active={calldataMode === "confirm"}
+            onClick={() => !formDisabled && setCalldataMode("confirm")}
+          >
+            on confirm
           </Chip>
         </div>
       ) : null}
