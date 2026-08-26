@@ -26,7 +26,11 @@ export interface KalqiXMarketPrice {
 }
 
 import type { Address } from "viem";
-import type { Venue } from "../../config/networks";
+import type { Venue } from "../../config/deployments";
+import type {
+  KyberswapExecutionContext,
+  QuoteCalldataV2,
+} from "./apiClient";
 
 export type Side = "BUY" | "SELL";
 
@@ -57,14 +61,25 @@ export interface Quote {
  *  quote into one of these. */
 export interface VenueQuote extends Quote {
   venue: Venue;
+  /** `quote_id` of the response this quote came from; null on the legacy local
+   *  path. Carried per-quote rather than only on MultiQuote because POST
+   *  /intent consumes `quote_id` + `venue` + this quote's calldata together —
+   *  reading the id and the calldata from different renders could pair an id
+   *  from poll N with calldata from poll N-1. */
+  quoteId: string | null;
   /** Token-approval spender for this venue (KalqiX escrow or Kyber router). */
   approvalAddress: Address;
-  /** The exact parsed `venue_detail` from /v2/quote — carried by reference so
-   *  routeSummary reaches POST /intent verbatim. null for KALQIX/legacy. */
-  venueDetail: { routeSummary?: unknown } | null;
+  /** The exact parsed `details.execution_context` from /v2/quote — carried by
+   *  reference so routeSummary reaches POST /intent verbatim. null for
+   *  KALQIX/legacy. */
+  executionContext: KyberswapExecutionContext | null;
   /** JSON snapshot of routeSummary taken at parse time; the pre-submit
    *  integrity assertion compares against it. */
   routeSummaryJson: string | null;
+  /** Executable transaction, present only when the quote was requested with
+   *  `create_calldata`. Carries its own expiry clock, independent of quote
+   *  staleness — see `QuoteCalldataV2.expires_at_ms`. */
+  calldata: QuoteCalldataV2 | null;
 }
 
 /** A venue that returned an error instead of a quote. */

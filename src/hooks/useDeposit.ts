@@ -3,11 +3,16 @@ import { useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
 import type { Address, Hex } from "viem";
 import { useActivityLog } from "../store/activityLog";
 import { shortAddress } from "../lib/format";
+import { useActiveChain } from "./useSession";
 
 interface DepositArgs {
   to: Address;
   data: Hex;
   value?: bigint;
+  /** Explicit gas limit. Aggregator routers need headroom above a bare
+   *  eth_estimateGas — see GAS_BUFFER_NUM in SwapForm for why. Omitted, the
+   *  wallet estimates and we inherit that risk. */
+  gas?: bigint;
 }
 
 interface SendCallLabels {
@@ -17,7 +22,12 @@ interface SendCallLabels {
 
 /** Generic raw-calldata sender + receipt watcher. Defaults to the escrow
  *  deposit wording; the KYBERSWAP router path reuses it with its own labels
- *  (pass static strings — labels aren't tracked as effect deps). */
+ *  (pass static strings — labels aren't tracked as effect deps).
+ *
+ *  Every call is pinned to the SELECTED chain, not the wallet's current one.
+ *  wagmi raises ChainMismatchError rather than broadcasting when they differ —
+ *  which is the point: calldata built for one chain must never execute on
+ *  another. */
 export function useDeposit(
   labels: SendCallLabels = {
     sent: "deposit() sent",
@@ -25,8 +35,12 @@ export function useDeposit(
   }
 ) {
   const log = useActivityLog((s) => s.push);
+  const chain = useActiveChain();
   const send = useSendTransaction();
-  const receipt = useWaitForTransactionReceipt({ hash: send.data });
+  const receipt = useWaitForTransactionReceipt({
+    hash: send.data,
+    chainId: chain.id,
+  });
 
   useEffect(() => {
     if (send.data) {
@@ -51,9 +65,11 @@ export function useDeposit(
   return {
     deposit: (args: DepositArgs) =>
       send.sendTransaction({
+        chainId: chain.id,
         to: args.to,
         data: args.data,
         value: args.value ?? 0n,
+        ...(args.gas ? { gas: args.gas } : {}),
       }),
     txHash: send.data,
     receipt: receipt.data,

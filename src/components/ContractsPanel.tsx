@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Panel } from "./primitives/Panel";
-import { useActiveNetwork } from "../hooks/useActiveNetwork";
-import { addressExplorerUrl } from "../config/networks";
+import { useActiveChain, useActiveDeployment } from "../hooks/useSession";
+import { addressExplorerUrl } from "../config/chains";
 import { TOKEN_META } from "../config/tokens";
 
 interface Row {
@@ -11,18 +11,19 @@ interface Row {
 }
 
 export function ContractsPanel() {
-  const network = useActiveNetwork();
+  const network = useActiveDeployment();
+  const chain = useActiveChain();
   const [copied, setCopied] = useState<string | null>(null);
 
   const rows: Row[] = [
     {
       label: "USDC",
-      address: network.tokens.USDC,
+      address: network.kalqixTokens.USDC,
       brand: TOKEN_META.USDC.brand,
     },
     {
       label: "cbBTC",
-      address: network.tokens.cbBTC,
+      address: network.kalqixTokens.cbBTC,
       brand: TOKEN_META.cbBTC.brand,
     },
     {
@@ -89,7 +90,7 @@ export function ContractsPanel() {
                   {copied === r.address ? "✓ copied to clipboard" : r.address}
                 </span>
                 <a
-                  href={addressExplorerUrl(network, r.address)}
+                  href={addressExplorerUrl(chain, r.address)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="contracts__action"

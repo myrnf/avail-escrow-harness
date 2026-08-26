@@ -1,5 +1,5 @@
 import type { Address } from "viem";
-import type { NetworkConfig } from "./networks";
+import type { Deployment } from "./deployments";
 
 export type TokenSymbol = "USDC" | "cbBTC" | "ETH";
 
@@ -65,12 +65,12 @@ export const TOKEN_LIST_META: TokenMeta[] = [
 ];
 
 export function getToken(
-  network: NetworkConfig,
+  network: Deployment,
   symbol: TokenSymbol
 ): TokenInfo {
   return {
     ...TOKEN_META[symbol],
-    address: network.tokens[symbol],
+    address: network.kalqixTokens[symbol],
     supportsPermit: network.permitSupport[symbol],
   };
 }

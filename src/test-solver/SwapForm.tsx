@@ -3,8 +3,10 @@ import { useAccount } from "wagmi";
 import { Panel, PanelStatus } from "../components/primitives/Panel";
 import { TokenPill } from "../components/primitives/TokenPill";
 import { Chip } from "../components/primitives/Chip";
-import { NETWORKS } from "../config/networks";
+import { DEPLOYMENTS } from "../config/deployments";
+import { base } from "viem/chains";
 import { getToken, type TokenSymbol } from "../config/tokens";
+import type { ChainToken } from "../lib/tokens";
 import {
   DEFAULT_SLIPPAGE_BPS,
   SLIPPAGE_PRESETS_BPS,
@@ -15,7 +17,7 @@ import { fmtAmount, parseAmount } from "../lib/format";
 import { useSwapSession } from "./hooks/useSwapSession";
 import type { Algo } from "./lib/types";
 
-const NETWORK = NETWORKS.canary; // test-solver is implicitly Base mainnet
+const NETWORK = DEPLOYMENTS.canary; // test-solver is implicitly Base mainnet
 const ALGO_OPTIONS: { key: Algo; label: string; hint: string }[] = [
   { key: "clear_min", label: "A · clear min", hint: "current avail behavior" },
   { key: "maximize_fill", label: "B · market FOK", hint: "kalqix walks the book" },
@@ -34,6 +36,16 @@ export function SwapForm() {
 
   const inInfo = getToken(NETWORK, tokenIn);
   const outInfo = getToken(NETWORK, tokenOut);
+  // The shared quote hook is token-addressed now; this harness still picks by
+  // KalqiX symbol, so adapt at the boundary rather than reworking its UI.
+  const asChainToken = (t: typeof inInfo): ChainToken => ({
+    chainId: base.id,
+    address: t.address,
+    symbol: t.symbol,
+    name: t.name,
+    decimals: t.decimals,
+    source: "kyber",
+  });
   const amountIn = useMemo(() => {
     try {
       return parseAmount(amountInStr, inInfo.decimals);
@@ -44,8 +56,8 @@ export function SwapForm() {
 
   const balance = useTokenBalance(inInfo.address, address);
   const quote = useQuote({
-    tokenIn,
-    tokenOut,
+    tokenIn: asChainToken(inInfo),
+    tokenOut: asChainToken(outInfo),
     amountIn,
     slippageBps,
     enabled: amountIn > 0n && !session.isInFlight,

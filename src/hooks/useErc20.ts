@@ -7,12 +7,19 @@ import {
 } from "wagmi";
 import { useEffect } from "react";
 import type { Address } from "viem";
-import type { TokenInfo } from "../config/tokens";
+
 import { useActivityLog } from "../store/activityLog";
 import { shortAddress } from "../lib/format";
+import { useActiveChain } from "./useSession";
+
+// Every read and write below pins `chainId` to the SELECTED chain. Without it
+// wagmi follows whatever chain the wallet happens to be on, which across 18
+// chains means reading a balance from one chain and approving on another.
 
 export function useTokenBalance(token: Address, owner: Address | undefined) {
+  const chain = useActiveChain();
   return useReadContract({
+    chainId: chain.id,
     address: token,
     abi: erc20Abi,
     functionName: "balanceOf",
@@ -23,13 +30,22 @@ export function useTokenBalance(token: Address, owner: Address | undefined) {
 
 /**
  * Balance of `token` for `owner`, normalized to `{ data?: bigint }`.
- * Native ETH has no ERC-20 contract (its address is the 0xEeee… sentinel), so
- * we read the chain balance via useBalance; ERC-20s use balanceOf. Both hooks
- * are always called (Rules of Hooks) but gated so only the relevant one fires.
+ * The native asset has no ERC-20 contract (its address is the 0xEeee…
+ * sentinel), so we read the chain balance via useBalance; ERC-20s use
+ * balanceOf. Both hooks are always called (Rules of Hooks) but gated so only
+ * the relevant one fires.
+ *
+ * `token` is structurally typed so both the KalqiX TokenInfo and the generic
+ * ChainToken satisfy it — only the address and nativeness matter here.
  */
-export function useInputBalance(token: TokenInfo, owner: Address | undefined) {
+export function useInputBalance(
+  token: { address: Address; isNative?: boolean },
+  owner: Address | undefined
+) {
+  const chain = useActiveChain();
   const isNative = !!token.isNative;
   const erc20 = useReadContract({
+    chainId: chain.id,
     address: token.address,
     abi: erc20Abi,
     functionName: "balanceOf",
@@ -37,6 +53,7 @@ export function useInputBalance(token: TokenInfo, owner: Address | undefined) {
     query: { enabled: !!owner && !isNative, refetchInterval: 12_000 },
   });
   const native = useBalance({
+    chainId: chain.id,
     address: owner,
     query: { enabled: !!owner && isNative, refetchInterval: 12_000 },
   });
@@ -47,25 +64,34 @@ export function useInputBalance(token: TokenInfo, owner: Address | undefined) {
   };
 }
 
+/** `spender` is optional: on chains where the selected venue exposes no
+ *  approval address there is nothing to read an allowance against, and the
+ *  query stays disabled rather than guessing one. */
 export function useTokenAllowance(
   token: Address,
   owner: Address | undefined,
-  spender: Address,
+  spender: Address | undefined,
   enabled = true
 ) {
+  const chain = useActiveChain();
   return useReadContract({
+    chainId: chain.id,
     address: token,
     abi: erc20Abi,
     functionName: "allowance",
-    args: owner ? [owner, spender] : undefined,
-    query: { enabled: !!owner && enabled, refetchInterval: 8_000 },
+    args: owner && spender ? [owner, spender] : undefined,
+    query: { enabled: !!owner && !!spender && enabled, refetchInterval: 8_000 },
   });
 }
 
 export function useApprove() {
   const log = useActivityLog((s) => s.push);
+  const chain = useActiveChain();
   const write = useWriteContract();
-  const receipt = useWaitForTransactionReceipt({ hash: write.data });
+  const receipt = useWaitForTransactionReceipt({
+    hash: write.data,
+    chainId: chain.id,
+  });
 
   useEffect(() => {
     if (write.data) {
@@ -90,6 +116,7 @@ export function useApprove() {
   return {
     approve: (token: Address, spender: Address, amount: bigint) =>
       write.writeContract({
+        chainId: chain.id,
         address: token,
         abi: erc20Abi,
         functionName: "approve",

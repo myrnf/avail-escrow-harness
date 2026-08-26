@@ -1,11 +1,17 @@
 import type { Address, Hex } from "viem";
-import type { Venue } from "../../config/networks";
+import type { Venue } from "../../config/deployments";
+import type { KyberswapExecutionContext } from "../quote/apiClient";
 
 // ─────────────────────────────────────────────────────────────────────────
 // POST /intent
 // ─────────────────────────────────────────────────────────────────────────
 
 export interface CreateIntentRequest {
+  /** EVM chain to execute on. The API defaults to Base (8453) when omitted,
+   *  but we always send it — a deployment that ignores the field is a
+   *  wrong-chain quote wearing a 200, so being explicit costs nothing and the
+   *  probe script can assert on it. */
+  chain_id?: number;
   token_in: Address;
   token_out: Address;
   amount_in: string;
@@ -20,12 +26,39 @@ export interface CreateIntentRequest {
   // legacy mainnet backend, which may reject unknown keys.
   /** Executing venue; the backend defaults to KALQIX when omitted. */
   venue?: Venue;
-  /** REQUIRED for KYBERSWAP: `{ routeSummary }` passed back verbatim from the
-   *  /v2/quote venue_detail — same object reference, never rebuilt. */
-  venue_detail?: { routeSummary?: unknown } | null;
+  /** REQUIRED for KYBERSWAP: the complete `details.execution_context` from
+   *  /v2/quote, passed back by the same object reference and never rebuilt.
+   *  Its `chainId` must equal `chain_id`. */
+  execution_context?: KyberswapExecutionContext | null;
   /** REQUIRED for KYBERSWAP: the tx sender + output recipient. Must equal the
    *  connected wallet that will send the router tx. Ignored for KALQIX. */
   user_wallet?: Address | null;
+}
+
+/**
+ * Quote-consuming form of POST /intent (API v0.3.0). Converts one venue's
+ * retained calldata from a /v2/quote response into a persisted intent.
+ *
+ * The quote must have been requested with that venue's `create_calldata`, must
+ * not have passed `expires_at_ms`, and is CONSUMED — asking twice for the same
+ * (quote_id, venue) fails with NO_QUOTE_FOUND.
+ *
+ * Note the endpoint is an untagged enum server-side: a body that matches
+ * neither form returns a bare "data did not match any variant of untagged enum
+ * Request" with no field-level detail, so these bodies must be exactly right
+ * rather than debugged from the error text.
+ */
+export interface CreateIntentFromQuoteRequest {
+  quote_id: string;
+  venue: Venue;
+  client_intent_id?: string | null;
+}
+
+/** Success body for the quote form — `id` ONLY, no calldata (the caller
+ *  already holds it). This is the intent id that was reserved when the
+ *  calldata was built, i.e. the one embedded in that calldata. */
+export interface CreateIntentFromQuoteSuccess {
+  id: string;
 }
 
 /** Avail Escrow `/intent` error codes (OpenAPI enum). String widened with
@@ -54,8 +87,13 @@ export type IntentErrorCode =
   | "AMOUNT_IN_BELOW_MIN_AMOUNT"
   | "AMOUNT_IN_ABOVE_MAX_AMOUNT"
   | "BAD_VENUE"
-  | "BAD_VENUE_DETAIL"
+  | "BAD_EXECUTION_CONTEXT"
   | "BAD_USER_WALLET"
+  // Quote-consuming form only: the retained calldata is gone (never existed,
+  // already consumed, or past expires_at_ms). Both mean "re-quote and retry".
+  | "NO_QUOTE_FOUND"
+  | "QUOTE_EXPIRED"
+  | "BAD_CHAIN_ID"
   | "SERVICE_UNAVAILABLE"
   | (string & {});
 

@@ -4,7 +4,8 @@ import { WagmiProvider, http } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RainbowKitProvider, getDefaultConfig, lightTheme } from "@rainbow-me/rainbowkit";
 import { WALLETCONNECT_PROJECT_ID } from "../config/chain";
-import { NETWORKS } from "../config/networks";
+import { CHAINS } from "../config/chains";
+import type { Chain } from "viem";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -15,18 +16,25 @@ const queryClient = new QueryClient({
   },
 });
 
-const networks = Object.values(NETWORKS);
-const [first, ...rest] = networks;
-if (!first) throw new Error("No networks configured");
+// Every chain in the registry, keyed by id — so the entry per chain is unique
+// even though several deployments share Base. Wallets that don't know a chain
+// (Monad, MegaETH, Plasma, Etherlink…) get prompted with wallet_addEthereumChain
+// on switch, using the params from viem's chain definitions.
+const chainList = Object.values(CHAINS);
+const [firstChain, ...restChains] = chainList;
+if (!firstChain) throw new Error("No chains configured");
 
 const transports = Object.fromEntries(
-  networks.map((n) => [n.chain.id, http(n.rpcUrl)])
+  chainList.map((c) => [c.id, http(c.rpcUrl)])
 );
 
 const config = getDefaultConfig({
   appName: "Avail × KalqiX Swap Harness",
   projectId: WALLETCONNECT_PROJECT_ID || "avail-kalqix-harness-local",
-  chains: [first.chain, ...rest.map((n) => n.chain)] as [typeof first.chain, ...typeof rest[number]["chain"][]],
+  chains: [firstChain.chain, ...restChains.map((c) => c.chain)] as [
+    Chain,
+    ...Chain[],
+  ],
   transports,
   ssr: false,
 });
