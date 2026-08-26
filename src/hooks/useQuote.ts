@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
+import type { Address } from "viem";
 import { getMarket, getMarketPrice, quoteSwap } from "../lib/quote";
 import { rawPriceFromMarketPrice, QuoteValidationError } from "../lib/quote/calc";
 import {
@@ -27,7 +28,8 @@ const VALIDATION_ERROR_CODES = new Set([
   "TOKEN_OUT_NOT_SUPPORTED",
   "NO_MARKET_FOUND",
   "BAD_SLIPPAGE",
-  "BAD_WHITELISTED_VENUES",
+  "BAD_VENUES",
+  "BAD_VENUE_OPTIONS",
   "BAD_CHAIN_ID",
 ]);
 
@@ -69,6 +71,15 @@ interface QuoteArgs {
   /** Poll cadence. The open-routing benchmark runs slower than the primary
    *  quote — it's a reference number, not the one being executed. */
   refreshMs?: number;
+  /** Venues that should return executable calldata with the quote. The caller
+   *  owns this policy because it depends on state this hook can't see: KALQIX
+   *  is excluded while the permit flow is active (the permit is baked into
+   *  deposit calldata at quote time, so it cannot precede its own signature).
+   *  Empty/omitted → quote-only, and calldata is fetched at confirm instead. */
+  calldataFor?: Venue[];
+  /** Connected wallet. REQUIRED by the API for KYBERSWAP calldata, so Kyber
+   *  pre-fetch is unavailable until a wallet is connected. */
+  userWallet?: Address;
 }
 
 export function useQuote({
@@ -80,6 +91,8 @@ export function useQuote({
   quickswapOnly = false,
   enabled = true,
   refreshMs = QUOTE_REFRESH_MS,
+  calldataFor,
+  userWallet,
 }: QuoteArgs) {
   const network = useActiveDeployment();
   const chain = useActiveChain();
@@ -90,6 +103,25 @@ export function useQuote({
     () => venues ?? network.venues ?? [],
     [venues, network.venues]
   );
+  /**
+   * Venues that get `create_calldata`, intersected with the venues we're
+   * actually asking for.
+   *
+   * The server rejects the mismatch outright: requesting kalqix.create_calldata
+   * without KALQIX in `venues` fails the WHOLE request with BAD_VENUES
+   * ("kalqix.create_intent requires KALQIX in venues"), losing the other
+   * venue's quote too. The two lists are computed independently upstream —
+   * venue gating from supported-token limits, calldata policy from permit and
+   * wallet state — so they can disagree both transiently (mid deployment
+   * switch) and persistently (a venue gated out by an amount limit).
+   */
+  const calldataVenues = useMemo(
+    () => (calldataFor ?? []).filter((v) => allowedVenues.includes(v)),
+    [calldataFor, allowedVenues]
+  );
+  // Only testnet differs — its backend rejects 84532 and registers its Base
+  // Sepolia assets under 8453. Everywhere else this is just chain.id.
+  const quoteChainId = network.quoteChainId ?? chain.id;
   // A KalqiX market only exists for USDC-quoted pairs of KalqiX assets, which
   // is Base-only. Everything else quotes through KYBERSWAP with no route.
   const route = useMemo(
@@ -118,6 +150,8 @@ export function useQuote({
       amountIn.toString(),
       slippageBps,
       quickswapOnly,
+      calldataVenues.join(","),
+      userWallet ?? "",
     ],
     enabled:
       enabled &&
@@ -137,7 +171,7 @@ export function useQuote({
       // ---- Avail /v2/quote path (multi-venue, service owns the math) ----
       if (v2) {
         // QuickSwap-only mode asks the orchestrator to restrict Kyber's route
-        // discovery via venue_options. KALQIX is unaffected.
+        // discovery via kyberswap.route_options. KALQIX is unaffected.
         const restrictTo =
           quickswapOnly && allowedVenues.includes("KYBERSWAP")
             ? chain.quickswapSources
@@ -145,15 +179,21 @@ export function useQuote({
 
         const t0 = performance.now();
         const resp = await getAvailQuoteV2(network.availEscrowBaseUrl, {
-          chainId: chain.id,
+          chainId: quoteChainId,
           tokenIn: tokenIn.address,
           tokenOut: tokenOut.address,
           amountIn,
           slippageBps,
-          whitelistedVenues: allowedVenues,
-          venueOption: restrictTo?.length
-            ? { venue: "KYBERSWAP", includedSources: restrictTo }
-            : undefined,
+          venues: allowedVenues,
+          includedSources: restrictTo?.length ? restrictTo : undefined,
+          kalqixCalldata: calldataVenues.includes("KALQIX") ? {} : null,
+          // user_wallet is required by the API, so no wallet means no Kyber
+          // calldata — the quote still succeeds, and confirm falls back to the
+          // payload form of POST /intent.
+          kyberCalldata:
+            calldataVenues.includes("KYBERSWAP") && userWallet
+              ? { userWallet }
+              : null,
         });
         log({
           level: "info",
@@ -171,10 +211,11 @@ export function useQuote({
 
         const quotes: VenueQuote[] = [];
         const failures: VenueFailure[] = [];
-        // No client-side venue filter: `whitelisted_venues` binds server-side
-        // on POST, so the response only contains venues we asked for.
+        // No client-side venue filter: `venues` binds server-side on POST, so
+        // the response only contains venues we asked for.
         for (const v of resp.quotes ?? []) {
           const parsed = parseVenueQuote(v, {
+            quoteId: resp.quote_id,
             userAmountIn: amountIn,
             slippageBps,
             inDecimals: tokenIn.decimals,
@@ -209,18 +250,18 @@ export function useQuote({
           }
           // Trust the route, not the request: if we asked for restricted
           // sources, the returned hops must actually be those sources. A
-          // dropped venue_options would otherwise surface as a normal
+          // dropped route_options would otherwise surface as a normal
           // best-route quote wearing a "QuickSwap only" label.
           if (restrictTo?.length && parsed.quote.venue === "KYBERSWAP") {
             const foreign = disallowedExchanges(
-              parsed.quote.venueDetail,
+              parsed.quote.executionContext,
               restrictTo
             );
             if (foreign.length > 0) {
               log({
                 level: "warn",
                 channel: "QUOTE",
-                message: `venue_options ignored — route used ${foreign.join(", ")}`,
+                message: `route_options ignored — route used ${foreign.join(", ")}`,
               });
               failures.push({
                 venue: "KYBERSWAP",
@@ -244,7 +285,7 @@ export function useQuote({
         quotes.sort((a, b) => (b.amountOut > a.amountOut ? 1 : -1));
         // Failures render per-venue — an all-failed response is still data,
         // not an exception.
-        return { quoteId: resp.id, quotes, failures };
+        return { quoteId: resp.quote_id, quotes, failures };
       }
 
       // ---- Legacy local path: KalqiX price + quoteSwap (mainnet) ----
@@ -285,9 +326,13 @@ export function useQuote({
           {
             ...local,
             venue: "KALQIX",
+            quoteId: null,
             approvalAddress: network.escrowContract,
-            venueDetail: null,
+            executionContext: null,
             routeSummaryJson: null,
+            // The legacy backend has no calldata-on-quote; this path always
+            // fetches calldata from the payload form of POST /intent.
+            calldata: null,
           },
         ],
         failures: [],
@@ -303,6 +348,9 @@ export function useQuote({
 }
 
 interface ParseCtx {
+  /** Response-level `quote_id`, bound onto each quote so confirm never pairs an
+   *  id with calldata from a different poll. */
+  quoteId: string;
   userAmountIn: bigint;
   slippageBps: number;
   inDecimals: number;
@@ -318,34 +366,33 @@ function parseVenueQuote(
   v: AvailQuoteVenueV2,
   ctx: ParseCtx
 ): { quote: VenueQuote } | { failure: VenueFailure } {
+  // Success and failure share the `details` slot; error_code discriminates.
+  const d = v.details ?? {};
   const fail = (code: string, message: string | null): { failure: VenueFailure } => ({
-    failure: { venue: v.venue_name, code, message },
+    failure: { venue: v.venue, code, message },
   });
-  if (v.error_code) {
-    // KYBERSWAP failures often carry the useful message in kyber_error_message
+  if (d.error_code) {
+    // KYBERSWAP failures often carry the useful message in kyber_message
     // (error_message is empty-string on the live backend).
-    return fail(
-      v.error_code,
-      v.error_message || v.kyber_error_message || null
-    );
+    return fail(d.error_code, d.error_message || d.kyber_message || null);
   }
   if (!v.amount_out || v.amount_out === "0") {
     return fail("NO_QUOTE", "Amount is too small for this market.");
   }
-  if (!v.approval_address) {
+  if (!d.approval_address) {
     return fail("NO_APPROVAL_ADDRESS", "Venue returned no approval address.");
   }
 
   // KALQIX returns a KalqiX-aligned input amount that can differ from the
   // requested one — permits, msg.value and the intent body must all use it.
   const amountIn =
-    v.venue_name === "KALQIX" && v.amount_in
-      ? BigInt(v.amount_in)
+    v.venue === "KALQIX" && d.amount_in
+      ? BigInt(d.amount_in)
       : ctx.userAmountIn;
   const amountOut = BigInt(v.amount_out);
   const amountOutMin =
-    v.amount_out_min && v.amount_out_min !== "0"
-      ? BigInt(v.amount_out_min)
+    d.amount_out_min && d.amount_out_min !== "0"
+      ? BigInt(d.amount_out_min)
       : (amountOut * BigInt(10_000 - ctx.slippageBps)) / 10_000n;
 
   // Display price, derived from the amounts (the API returns no price field)
@@ -361,6 +408,8 @@ function parseVenueQuote(
       ? outHuman / inHuman
       : 0;
 
+  const executionContext = d.execution_context ?? null;
+
   return {
     quote: {
       amountIn,
@@ -374,15 +423,18 @@ function parseVenueQuote(
       side: ctx.side,
       ticker: ctx.ticker,
       // Clamp so a server clock ahead of the client can't extend the TTL.
-      fetchedAt: Math.min(v.quoted_at ?? Date.now(), Date.now()),
-      venue: v.venue_name as Venue,
-      approvalAddress: v.approval_address,
+      fetchedAt: Math.min(v.quoted_at_ms ?? Date.now(), Date.now()),
+      venue: v.venue as Venue,
+      quoteId: ctx.quoteId,
+      approvalAddress: d.approval_address,
       // Same parsed reference — the verbatim-routeSummary guarantee.
-      venueDetail: v.venue_detail ?? null,
+      executionContext,
       routeSummaryJson:
-        v.venue_detail?.routeSummary !== undefined
-          ? JSON.stringify(v.venue_detail.routeSummary)
+        executionContext?.routeSummary !== undefined
+          ? JSON.stringify(executionContext.routeSummary)
           : null,
+      // Present only when this venue was in `calldataFor`.
+      calldata: d.calldata ?? null,
     },
   };
 }

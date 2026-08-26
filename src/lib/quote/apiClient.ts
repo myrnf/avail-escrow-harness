@@ -1,4 +1,4 @@
-import type { Address } from "viem";
+import type { Address, Hex } from "viem";
 import type { Venue } from "../../config/deployments";
 
 /** Thrown when the backend has stopped intake (HTTP 503 or an explicit
@@ -10,112 +10,7 @@ export class ServiceUnavailableError extends Error {
   }
 }
 
-/** Per-venue error codes inside a 200 /v2/quote response. */
-export type QuoteVenueErrorCode =
-  | "COULD_NOT_REACH"
-  | "MIN_IN_AMOUNT_VIOLATION"
-  | "MAX_IN_AMOUNT_VIOLATION"
-  | "KYBER_ERROR"
-  | "INTERNAL_SERVER_ERROR"
-  | "SERVICE_UNAVAILABLE"
-  | (string & {});
-
-/** One venue's entry in a /v2/quote response. Every field except venue_name
- *  is optional-tolerant: failed venues omit fields entirely rather than
- *  nulling them (verified against the live backend). */
-export interface AvailQuoteVenueV2 {
-  venue_name: Venue | (string & {});
-  amount_out?: string | null;
-  /** Present only when slippage_bps was sent (we always send it). */
-  amount_out_min?: string | null;
-  /** Unix ms the venue produced the quote; null on failed venues. */
-  quoted_at?: number | null;
-  /** Token-approval spender for THIS venue: KalqiX escrow or Kyber router. */
-  approval_address?: Address | null;
-  /** OPAQUE. A KYBERSWAP quote's `routeSummary` must reach POST /intent
-   *  byte-for-byte unchanged — never clone, re-shape, or re-order it. */
-  venue_detail?: { routeSummary?: unknown } | null;
-  /** KALQIX: the KalqiX-aligned input amount (may differ from requested). */
-  amount_in?: string | null;
-  asset_in_symbol?: string | null;
-  asset_out_symbol?: string | null;
-  /** KYBERSWAP metadata. NOTE: a SUCCESSFUL Kyber quote carries
-   *  kyber_error_code 0 / "successfully" — failure detection must key on
-   *  `error_code` / missing amount_out, never on these fields. */
-  kyber_error_code?: number | string | null;
-  kyber_error_message?: string | null;
-  request_id?: string | null;
-  error_code?: QuoteVenueErrorCode | null;
-  error_message?: string | null;
-}
-
-/** Avail POST /v2/quote response. `quotes` is ordered best-first (descending
- *  amount_out); a 200 can still contain per-venue failures. */
-export interface AvailQuoteV2Response {
-  id: string;
-  quotes: AvailQuoteVenueV2[];
-  error_code: string | null;
-  error_message: string | null;
-}
-
-/** Route-discovery options for one venue (`venue_options` in the spec, which
- *  caps the array at a single entry). Only the KYBERSWAP fields we use are
- *  modelled; fee fields are server-controlled and rejected by the API, so
- *  they're deliberately absent. */
-export interface VenueQuoteOption {
-  venue: Venue;
-  /** Kyber source (dex) ids to route through exclusively. */
-  includedSources?: string[];
-}
-
-interface Params {
-  chainId: number;
-  tokenIn: Address;
-  tokenOut: Address;
-  amountIn: bigint;
-  slippageBps: number;
-  whitelistedVenues: Venue[];
-  venueOption?: VenueQuoteOption;
-}
-
-/** The chain the API assumes when `chain_id` is absent. The legacy GET build
- *  predates the field entirely, so every query-string request is implicitly
- *  this chain. */
-const LEGACY_IMPLIED_CHAIN_ID = 8453; // Base
-
-/** Query-string form of the request, for envs still on the pre-POST build.
- *  TRANSITIONAL — delete once every env serves POST /v2/quote. */
-function legacyQuoteUrl(baseUrl: string, p: Params): string {
-  // The query form cannot carry chain_id, and the server defaults it to Base.
-  // Falling back for any other chain would answer a Polygon request with a
-  // Base quote — a plausible, well-formed, wrong answer, which is the worst
-  // failure shape available here. Refuse instead.
-  if (p.chainId !== LEGACY_IMPLIED_CHAIN_ID) {
-    throw new BadChainIdError(
-      `This deployment only serves the legacy GET /v2/quote, which cannot carry chain_id — it can only quote Base.`
-    );
-  }
-  const parts = [
-    `token_in=${p.tokenIn.toLowerCase()}`,
-    `token_out=${p.tokenOut.toLowerCase()}`,
-    `amount_in=${p.amountIn.toString()}`,
-    `slippage_bps=${p.slippageBps}`,
-  ];
-  // Array params never worked on that build (its query deserializer can't
-  // build sequences), so they're omitted here rather than sent uselessly —
-  // callers filter venues client-side. Source restriction is simply
-  // unavailable until the env serves POST.
-  return `${baseUrl.replace(/\/$/, "")}/v2/quote?${parts.join("&")}`;
-}
-
-/** The server's body limit for this endpoint. Exceeding it returns 413 with a
- *  text/plain body rather than the JSON error envelope, so we'd lose the error
- *  shape — cheaper to catch it here. A typical request with two
- *  `included_sources` lands at ~310 bytes, so this only bites if that list
- *  grows a lot. */
-const MAX_BODY_BYTES = 512;
-
-/** Thrown when the requested chain is outside the API's `chain_id` enum. */
+/** Thrown when the requested chain is outside the deployment's `chain_id` enum. */
 export class BadChainIdError extends Error {
   constructor(message = "Chain not supported by this deployment") {
     super(message);
@@ -123,24 +18,138 @@ export class BadChainIdError extends Error {
   }
 }
 
+/** Venue-level error codes inside a 200 /v2/quote response. Widened with
+ *  `& {}` so codes from a newer backend still type-check. */
+export type QuoteVenueErrorCode =
+  | "COULD_NOT_REACH"
+  | "AMOUNT_IN_BELOW_MIN_AMOUNT"
+  | "AMOUNT_IN_ABOVE_MAX_AMOUNT"
+  | "MIN_TRADE_VIOLATION"
+  | "MAX_TRADE_VIOLATION"
+  | "MIN_QTY_VIOLATION"
+  | "STEP_SIZE_VIOLATION"
+  | "NO_ASSET_FOUND_FOR_TOKEN_IN"
+  | "NO_ASSET_FOUND_FOR_TOKEN_OUT"
+  | "NO_MARKET_FOUND"
+  | "UNSUPPORTED_CHAIN"
+  | "VENUE_ERROR"
+  | "INTERNAL_SERVER_ERROR"
+  | "SERVICE_UNAVAILABLE"
+  | (string & {});
+
+/**
+ * KYBERSWAP execution context: the opaque route summary plus the chain, router,
+ * exact slippage and origin used to build the transaction.
+ *
+ * OPAQUE. `routeSummary` must reach POST /intent byte-for-byte unchanged —
+ * never clone, re-shape, or re-order it.
+ */
+export interface KyberswapExecutionContext {
+  chainId: number;
+  routeSummary?: unknown;
+  routerAddress: Address;
+  slippageBps: number | null;
+  origin: Address | null;
+}
+
+/** `details.calldata` — an executable transaction, present only when the
+ *  request asked for it via `create_calldata`. The server reserves an intent id
+ *  alongside it and retains both until POST /intent consumes them (by
+ *  `quote_id` + `venue`) or `expires_at_ms` passes. Nothing is persisted until
+ *  that consume call, so polling with calldata on leaves no intent behind. */
+export interface QuoteCalldataV2 {
+  /** Unix ms. Hard deadline — a second clock, independent of quote staleness.
+   *  Measured at ~60s on canary and testnet (2026-08-20). */
+  expires_at_ms: number;
+  encoded_calldata: Hex;
+  /** KALQIX escrow, or KYBERSWAP router. */
+  contract_address: Address;
+  /** KALQIX only. */
+  solver_address?: Address | null;
+  /** KYBERSWAP only: native value the router tx must carry. */
+  transaction_value?: string | null;
+}
+
+/** Per-venue `details`. Success and failure share the same JSON slot, so
+ *  they're modelled as one optional-tolerant shape and discriminated on
+ *  `error_code`. */
+export interface QuoteDetailsV2 {
+  error_code?: QuoteVenueErrorCode | null;
+  error_message?: string | null;
+  /** Token-approval spender: KALQIX escrow or KYBERSWAP router. */
+  approval_address?: Address | null;
+  /** Present only when slippage_bps was sent (we always send it). */
+  amount_out_min?: string | null;
+  calldata?: QuoteCalldataV2 | null;
+  // KALQIX
+  /** The KalqiX-aligned input amount, which may differ from the requested one. */
+  amount_in?: string | null;
+  asset_in_symbol?: string | null;
+  asset_out_symbol?: string | null;
+  // KYBERSWAP
+  execution_context?: KyberswapExecutionContext | null;
+  /** NOTE: a SUCCESSFUL Kyber quote carries kyber_code 0 / "success" — failure
+   *  detection must key on `error_code`, never on these fields. */
+  kyber_code?: number | string | null;
+  kyber_message?: string | null;
+  kyber_request_id?: string | null;
+}
+
+/** One venue's entry in a /v2/quote response. */
+export interface AvailQuoteVenueV2 {
+  venue: Venue | (string & {});
+  amount_out?: string | null;
+  /** Unix ms the venue produced the quote; null on failed venues. */
+  quoted_at_ms?: number | null;
+  details?: QuoteDetailsV2 | null;
+}
+
+/** Avail POST /v2/quote response. `quotes` is ordered best-first (descending
+ *  amount_out); a 200 can still contain per-venue failures. */
+export interface AvailQuoteV2Response {
+  quote_id: string;
+  quotes: AvailQuoteVenueV2[];
+  error_code: string | null;
+  error_message: string | null;
+}
+
+interface Params {
+  /** The chain to QUOTE against, which is not always the chain we broadcast on
+   *  — see `Deployment.quoteChainId`. */
+  chainId: number;
+  tokenIn: Address;
+  tokenOut: Address;
+  amountIn: bigint;
+  slippageBps: number;
+  venues: Venue[];
+  /** Kyber source (dex) ids to route through exclusively. */
+  includedSources?: string[];
+  /** Ask for KALQIX deposit calldata in the quote. A permit, if given, is baked
+   *  into that calldata — which is why a permit swap cannot pre-fetch: the
+   *  signature would have to precede the thing it signs. */
+  kalqixCalldata?: { permit?: string | null } | null;
+  /** Ask for KYBERSWAP router calldata. `user_wallet` is REQUIRED by the API,
+   *  so this is only available once a wallet is connected. */
+  kyberCalldata?: { userWallet: Address } | null;
+}
+
+/** Documented Axum cap for this endpoint. Over it the server answers 413 in
+ *  text/plain, losing the JSON error envelope — cheaper to catch here than to
+ *  decode that. A previous 512-byte value here was simply wrong: canary
+ *  accepted an 80KB body with a 200 (verified 2026-08-20). This is a bound on
+ *  a runaway included_sources list, not a limit real requests approach. */
+const MAX_BODY_BYTES = 256 * 1024;
+
 /**
  * Request multi-venue quotes from Avail's POST /v2/quote. CORS-open and
  * preflight-enabled, so it's called directly from the browser. Addresses are
  * lowercased to match Avail's case-sensitive asset registry (same as the
  * intent client).
  *
- * A JSON body is what makes `whitelisted_venues` and `venue_options` usable
- * at all — the endpoint took query params until 2026-07-29, and that build's
- * deserializer could not construct sequences from a query string under any
- * encoding, so both array params were silently unreachable.
- *
- * `chain_id` selects the execution chain. The API defaults it to Base when
- * omitted, so it is always sent explicitly rather than relied upon.
- *
- * If an env still serves the older GET build it answers 405; we retry there as
- * a query request so quoting keeps working (without the array params, which
- * never functioned on it anyway). That fallback is refused for any chain but
- * Base — see legacyQuoteUrl. Delete both once every env is on POST.
+ * The request body is validated with `deny_unknown_fields`: a stale key fails
+ * the whole request with a 422 rather than being ignored (this is exactly how
+ * the pre-0.2.0 `whitelisted_venues` broke every quote). Per-venue option
+ * objects are therefore omitted entirely when unused, never sent as null.
  */
 export async function getAvailQuoteV2(
   baseUrl: string,
@@ -152,9 +161,28 @@ export async function getAvailQuoteV2(
     tokenOut,
     amountIn,
     slippageBps,
-    whitelistedVenues,
-    venueOption,
+    venues,
+    includedSources,
+    kalqixCalldata,
+    kyberCalldata,
   } = params;
+
+  const kyberswap =
+    includedSources?.length || kyberCalldata
+      ? {
+          ...(includedSources?.length
+            ? { route_options: { included_sources: includedSources } }
+            : {}),
+          ...(kyberCalldata
+            ? {
+                create_calldata: {
+                  user_wallet: kyberCalldata.userWallet.toLowerCase(),
+                },
+              }
+            : {}),
+        }
+      : undefined;
+
   const body = JSON.stringify({
     chain_id: chainId,
     token_in: tokenIn.toLowerCase(),
@@ -163,21 +191,19 @@ export async function getAvailQuoteV2(
     slippage_bps: slippageBps,
     // null (not []) means "all venues" per the spec; an empty allowlist would
     // be a request for nothing.
-    whitelisted_venues: whitelistedVenues.length ? whitelistedVenues : null,
-    venue_options: venueOption
-      ? [
-          {
-            venue_name: venueOption.venue,
-            option: venueOption.includedSources?.length
-              ? { included_sources: venueOption.includedSources }
-              : null,
+    venues: venues.length ? venues : null,
+    ...(kalqixCalldata
+      ? {
+          kalqix: {
+            create_calldata: kalqixCalldata.permit
+              ? { permit: kalqixCalldata.permit }
+              : {},
           },
-        ]
-      : null,
+        }
+      : {}),
+    ...(kyberswap ? { kyberswap } : {}),
   });
 
-  // Over the limit the server answers 413 in text/plain, losing the JSON error
-  // envelope — cheaper to catch here than to decode that.
   const bytes = new TextEncoder().encode(body).length;
   if (bytes > MAX_BODY_BYTES) {
     throw new Error(
@@ -185,14 +211,11 @@ export async function getAvailQuoteV2(
     );
   }
 
-  let res = await fetch(`${baseUrl.replace(/\/$/, "")}/v2/quote`, {
+  const res = await fetch(`${baseUrl.replace(/\/$/, "")}/v2/quote`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
   });
-  if (res.status === 405) {
-    res = await fetch(legacyQuoteUrl(baseUrl, params));
-  }
   const text = await res.text();
   let parsed: AvailQuoteV2Response;
   try {

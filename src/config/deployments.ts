@@ -48,6 +48,10 @@ export interface Deployment {
    *  POST /v2/quote, venue-aware POST /intent and GET /v2/intent/{id}.
    *  ABSENT → legacy path: local KalqiX quoting plus the old intent shapes. */
   venues?: Venue[];
+  /** `chain_id` to send to /v2/quote when it differs from the chain we actually
+   *  broadcast on. Only testnet needs this — see the note on that entry.
+   *  Absent → quote and execute on the same chain, which is the sane case. */
+  quoteChainId?: number;
   kalqixTokens: KalqixTokens;
   permitSupport: PermitSupport;
   kalqixMarketTickers: MarketTickers;
@@ -67,6 +71,14 @@ export const DEPLOYMENTS: Record<DeploymentKey, Deployment> = {
     // Base Sepolia only. KALQIX-only on purpose: Kyber has no coverage here.
     chainIds: [baseSepolia.id],
     venues: ["KALQIX"],
+    // This backend REJECTS chain_id 84532 outright (top-level BAD_CHAIN_ID,
+    // "Unsupported chain_id: 84532") but resolves its Base *Sepolia* KALQIX
+    // assets under 8453, returning deposit calldata for the Sepolia escrow
+    // below. So here `chain_id` selects the asset registry, not the broadcast
+    // chain. Verified 2026-08-20. Quotes go out as 8453; useDeposit still pins
+    // the transaction to chainIds[0] (84532) via wagmi, and that guard must not
+    // be relaxed to match.
+    quoteChainId: base.id,
     kalqixTokens: {
       USDC: "0x94d655f6cc102d1e7e3f7a0e66fa604779ca8306",
       cbBTC: "0xe58c5488de4d67dfb186ef955d412ff4473451a8",

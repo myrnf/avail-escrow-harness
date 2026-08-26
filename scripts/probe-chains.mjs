@@ -179,10 +179,13 @@ async function checkBreadth() {
       amount_in: pair.amountIn,
       slippage_bps: 50,
     });
-    const q = (json?.quotes ?? []).find((x) => x.venue_name === "KYBERSWAP");
-    const ok = status === 200 && !!q?.amount_out && !!q?.venue_detail?.routeSummary;
+    const q = (json?.quotes ?? []).find((x) => x.venue === "KYBERSWAP");
+    const ok =
+      status === 200 &&
+      !!q?.amount_out &&
+      !!q?.details?.execution_context?.routeSummary;
     const detail = VERBOSE
-      ? `${pair.tokenIn.symbol}→${pair.tokenOut.symbol} ${ok ? `out=${q.amount_out}` : json?.error_code ?? q?.error_code ?? status}`
+      ? `${pair.tokenIn.symbol}→${pair.tokenOut.symbol} ${ok ? `out=${q.amount_out}` : json?.error_code ?? q?.details?.error_code ?? status}`
       : "";
     assert(ok === c.routable, `${c.label} (${c.id}) — ${c.routable ? "routes" : "does NOT route"}`, detail);
   }
@@ -190,7 +193,7 @@ async function checkBreadth() {
 
 // ── 2. SOURCES ───────────────────────────────────────────────────────────
 async function checkSources() {
-  console.log(`\n\x1b[1mSOURCES\x1b[0m — venue_options restricts routing to QuickSwap pools`);
+  console.log(`\n\x1b[1mSOURCES\x1b[0m — route_options restricts routing to QuickSwap pools`);
   for (const c of CHAINS.filter((x) => x.quickswapSources)) {
     const toks = await whitelistedTokens(c.id);
     const stable =
@@ -221,16 +224,14 @@ async function checkSources() {
         token_out: out.address,
         amount_in: (10n ** BigInt(stable.decimals) * 5n).toString(),
         slippage_bps: 50,
-        whitelisted_venues: ["KYBERSWAP"],
+        venues: ["KYBERSWAP"],
       };
       const restricted = await quote({
         ...base,
-        venue_options: [
-          { venue_name: "KYBERSWAP", option: { included_sources: c.quickswapSources } },
-        ],
+        kyberswap: { route_options: { included_sources: c.quickswapSources } },
       });
       const resQ = (restricted.json?.quotes ?? [])[0];
-      const resEx = routeExchanges(resQ?.venue_detail?.routeSummary);
+      const resEx = routeExchanges(resQ?.details?.execution_context?.routeSummary);
       if (resEx.length) {
         found = { base, out, resQ, resEx };
         break;
@@ -261,7 +262,7 @@ async function checkSources() {
 
     const open = await quote(found.base);
     const openQ = (open.json?.quotes ?? [])[0];
-    const openEx = routeExchanges(openQ?.venue_detail?.routeSummary);
+    const openEx = routeExchanges(openQ?.details?.execution_context?.routeSummary);
     if (openQ?.amount_out && found.resQ?.amount_out) {
       const o = BigInt(openQ.amount_out);
       const r = BigInt(found.resQ.amount_out);
@@ -309,21 +310,29 @@ async function checkChainIdHandling() {
 }
 
 // ── 4. BODY LIMIT ────────────────────────────────────────────────────────
+// The documented Axum cap for /v2/quote. An earlier 512-byte figure here was
+// wrong: canary accepted an 80KB body with a 200 (verified 2026-08-20). Kept as
+// a guard against an included_sources list growing without bound, not as a
+// number the server is anywhere near.
+const LIMIT = 256 * 1024;
+
 function checkBodyLimit() {
-  console.log(`\n\x1b[1mBODY LIMIT\x1b[0m — requests fit the server's 512-byte cap`);
+  console.log(`\n\x1b[1mBODY LIMIT\x1b[0m — requests fit the server's ${LIMIT}-byte cap`);
   const worst = JSON.stringify({
     chain_id: 8453,
     token_in: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     token_out: "0x4200000000000000000000000000000000000006",
     amount_in: "340282366920938463463374607431768211455",
     slippage_bps: 10000,
-    whitelisted_venues: ["KALQIX", "KYBERSWAP"],
-    venue_options: [
-      { venue_name: "KYBERSWAP", option: { included_sources: ["quickswap", "quickswap-v4"] } },
-    ],
+    venues: ["KALQIX", "KYBERSWAP"],
+    kalqix: { create_calldata: { permit: "0x".padEnd(2002, "a") } },
+    kyberswap: {
+      route_options: { included_sources: ["quickswap", "quickswap-v4"] },
+      create_calldata: { user_wallet: "0x5555555555555555555555555555555555555555" },
+    },
   });
   const bytes = new TextEncoder().encode(worst).length;
-  assert(bytes <= 512, `worst-case body is ${bytes}/512 bytes`);
+  assert(bytes <= LIMIT, `worst-case body is ${bytes}/${LIMIT} bytes`);
 }
 
 const t0 = Date.now();

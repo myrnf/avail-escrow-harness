@@ -1,5 +1,7 @@
 import type {
   CreateIntentEnvelope,
+  CreateIntentFromQuoteRequest,
+  CreateIntentFromQuoteSuccess,
   CreateIntentRequest,
   CreateIntentSuccess,
   IntentDetail,
@@ -131,6 +133,79 @@ export async function createIntent(
     );
   }
   return envelope.success;
+}
+
+/**
+ * Quote-consuming POST /intent (API v0.3.0): persists the intent whose calldata
+ * a /v2/quote already handed us, identified by `quote_id` + `venue`.
+ *
+ * The caller already holds the calldata, so this response carries only `id` —
+ * which is why this is a separate function rather than an overload of
+ * createIntent, whose success path requires `encoded_calldata`.
+ *
+ * Because the caller can broadcast without waiting on this, a failure here is
+ * NOT necessarily a failed swap. Callers that have already broadcast must log
+ * loudly rather than surface this as a swap error.
+ */
+export async function createIntentFromQuote(
+  baseUrl: string,
+  body: CreateIntentFromQuoteRequest
+): Promise<CreateIntentFromQuoteSuccess> {
+  if (!baseUrl) {
+    throw new AvailIntentError(
+      "Avail Escrow base URL is not configured for the active network.",
+      "INTERNAL_ERROR",
+      0
+    );
+  }
+  const res = await fetch(`${baseUrl}/intent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  // A body matching neither /intent form returns 422 text/plain with only
+  // "data did not match any variant of untagged enum Request" — no field
+  // detail. Surface it verbatim; there is nothing more to extract.
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    const text = await res.text().catch(() => "");
+    throw new AvailIntentError(
+      text || `Avail Escrow returned ${res.status} with no body`,
+      "INTERNAL_ERROR",
+      res.status
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await res.json();
+  } catch {
+    throw new AvailIntentError(
+      `Avail Escrow returned non-JSON (HTTP ${res.status})`,
+      "INTERNAL_ERROR",
+      res.status
+    );
+  }
+  const obj = (payload ?? {}) as Record<string, unknown>;
+  const errorCode = obj.error_code as string | null | undefined;
+  const errorMessage = obj.error_message as string | null | undefined;
+  if (errorCode || errorMessage) {
+    throw new AvailIntentError(
+      errorMessage || `Avail Escrow error: ${errorCode}`,
+      errorCode || "INTERNAL_ERROR",
+      res.status
+    );
+  }
+  const id = obj.id as string | undefined;
+  if (!id) {
+    throw new AvailIntentError(
+      `Avail Escrow returned no intent id (HTTP ${res.status})`,
+      "INTERNAL_ERROR",
+      res.status
+    );
+  }
+  return { id };
 }
 
 export async function getIntent(

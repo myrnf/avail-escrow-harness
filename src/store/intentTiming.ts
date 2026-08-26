@@ -4,6 +4,7 @@ import type { Venue } from "../config/deployments";
 export type StepKey =
   | "submit"          // user clicked "Confirm swap"
   | "permit"          // EIP-2612 permit signature collected (off-chain)
+  | "calldata"        // pre-fetched calldata used — no pre-wallet round-trip
   | "createIntent"    // POST /intent returned
   | "deposit"         // deposit tx broadcast (txHash known)
   | "deposited"       // deposit tx confirmed (IntentDeposited)
