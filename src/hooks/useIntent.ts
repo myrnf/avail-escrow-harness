@@ -80,8 +80,8 @@ export function useCreateIntentFromQuote() {
 }
 
 /**
- * Poll a KALQIX intent to its terminal state. Envs with `venues` configured
- * use GET /v2/intent/{id}; the legacy env (mainnet) keeps the old
+ * Poll a KALQIX intent to its terminal state. "v03" envs use
+ * GET /v2/intent/{id}; the legacy env (mainnet) keeps the old
  * GET /intent/{id}. Both shapes normalize to IntentStatusView, so consumers
  * never branch on the API version.
  *
@@ -90,7 +90,9 @@ export function useCreateIntentFromQuote() {
  */
 export function useIntentStatus(id: string | null) {
   const network = useActiveDeployment();
-  const v2 = !!network.venues;
+  // GET intent version tracks the wire generation, NOT whether the deployment
+  // has venues — mainnet serves multi-venue quotes but only the v1 endpoint.
+  const v2 = network.apiShape === "v03";
   return useQuery<IntentStatusView | null>({
     queryKey: ["intent", v2 ? "v2" : "v1", network.key, id],
     enabled: !!id,

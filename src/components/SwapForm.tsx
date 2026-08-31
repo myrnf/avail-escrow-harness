@@ -152,12 +152,14 @@ export function SwapForm({ isInFlight }: Props) {
   const quoteChainId = network.quoteChainId ?? chain.id;
 
   const calldataFor = useMemo<Venue[]>(() => {
-    if (calldataMode !== "prefetch" || !network.venues) return [];
+    // Gated on the wire generation, not on venues: mainnet has venues but
+    // silently ignores create_calldata.
+    if (calldataMode !== "prefetch" || network.apiShape !== "v03") return [];
     const out: Venue[] = [];
     if (!inSupportsPermit) out.push("KALQIX");
     if (address) out.push("KYBERSWAP");
     return out;
-  }, [calldataMode, network.venues, inSupportsPermit, address]);
+  }, [calldataMode, network.apiShape, inSupportsPermit, address]);
 
   const quote = useQuote({
     tokenIn,
@@ -799,9 +801,10 @@ export function SwapForm({ isInFlight }: Props) {
     }
 
     const intent = await createIntent.mutateAsync({
-      // Multi-venue backends only: the legacy deployment predates chain_id and
-      // is pinned to Base, so sending it there risks a reject for no gain.
-      ...(network.venues ? { chain_id: quoteChainId } : {}),
+      // The legacy build ignores chain_id and is pinned to Base, so sending it
+      // there would imply a guarantee it doesn't make. Gate on the wire shape,
+      // not on `venues` — mainnet now has venues but is still legacy.
+      ...(network.apiShape === "v03" ? { chain_id: quoteChainId } : {}),
       token_in: inInfo.address,
       token_out: outInfo!.address,
       // KalqiX-aligned amount from the quote — may differ from the typed
@@ -839,14 +842,17 @@ export function SwapForm({ isInFlight }: Props) {
     // If a quote from a previous chain survived a switch, this catches it
     // before we build a transaction against the wrong network. Compared
     // against quoteChainId, not chain.id — on testnet those differ by design.
-    const ctxChainId = q.executionContext?.chainId;
+    // Only meaningful on v03: the legacy build returns no chainId, so the
+    // normalizer fills in the one we asked for and this compares to itself.
+    const v03 = network.apiShape === "v03";
+    const ctxChainId = v03 ? q.executionContext?.chainId : undefined;
     if (ctxChainId !== undefined && ctxChainId !== quoteChainId) {
       throw new Error(
         `Quote is for chain ${ctxChainId}, not ${chain.label} — re-quote required.`
       );
     }
     return {
-      chain_id: quoteChainId,
+      ...(v03 ? { chain_id: quoteChainId } : {}),
       token_in: inInfo.address,
       token_out: outInfo!.address,
       amount_in: q.amountIn.toString(),
@@ -854,7 +860,13 @@ export function SwapForm({ isInFlight }: Props) {
       amount_out_quote: q.amountOut.toString(),
       client_intent_id: `harness-${Date.now()}`,
       venue: "KYBERSWAP",
-      execution_context: q.executionContext, // same parsed reference — never rebuilt
+      // Same routeSummary reference either way — only the wrapper differs.
+      // On legacy the execution context was synthesized client-side from the
+      // quote, so only routeSummary is real; sending it as execution_context
+      // there would be ignored and strip the route.
+      ...(v03
+        ? { execution_context: q.executionContext }
+        : { venue_detail: { routeSummary: q.executionContext?.routeSummary } }),
       user_wallet: address!, // tx sender below is this same connected wallet
     };
   }
@@ -933,11 +945,14 @@ export function SwapForm({ isInFlight }: Props) {
     } catch (e) {
       // BAD_EXECUTION_CONTEXT = the backend judged the route stale/mangled.
       // Re-quote and retry exactly once with the fresh routeSummary.
-      if (e instanceof AvailIntentError && e.kind === "BAD_EXECUTION_CONTEXT") {
+      if (
+        e instanceof AvailIntentError &&
+        (e.kind === "BAD_EXECUTION_CONTEXT" || e.kind === "BAD_VENUE_DETAIL")
+      ) {
         log({
           level: "warn",
           channel: "API",
-          message: "BAD_EXECUTION_CONTEXT · re-quoting and retrying once",
+          message: `${e.kind} · re-quoting and retrying once`,
         });
         const fresh = await quote.refetch();
         const q2 =
@@ -1347,8 +1362,9 @@ export function SwapForm({ isInFlight }: Props) {
           "every quote" pre-fetches executable calldata on every poll so confirm
           goes straight to the wallet with no server round-trip; "on confirm"
           is the older shape where POST /intent returns it. The legacy mainnet
-          backend has no calldata-on-quote, so it isn't offered there. */}
-      {network.venues ? (
+          backend has no calldata-on-quote, so it isn't offered there — a
+          selector that silently did nothing would be worse than its absence. */}
+      {network.apiShape === "v03" ? (
         <div className="swap__slip">
           <span className="swap__slip-label">Calldata</span>
           <Chip
