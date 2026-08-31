@@ -116,8 +116,15 @@ export function useQuote({
    * switch) and persistently (a venue gated out by an amount limit).
    */
   const calldataVenues = useMemo(
-    () => (calldataFor ?? []).filter((v) => allowedVenues.includes(v)),
-    [calldataFor, allowedVenues]
+    () =>
+      // calldata-on-quote is a v0.3.0 capability. The legacy build ignores
+      // `create_calldata` silently, so asking would produce quotes that look
+      // pre-fetched but carry none — drop it here rather than let the caller
+      // believe it was honoured.
+      network.apiShape === "v03"
+        ? (calldataFor ?? []).filter((v) => allowedVenues.includes(v))
+        : [],
+    [calldataFor, allowedVenues, network.apiShape]
   );
   // Only testnet differs — its backend rejects 84532 and registers its Base
   // Sepolia assets under 8453. Everywhere else this is just chain.id.
@@ -179,6 +186,7 @@ export function useQuote({
 
         const t0 = performance.now();
         const resp = await getAvailQuoteV2(network.availEscrowBaseUrl, {
+          shape: network.apiShape,
           chainId: quoteChainId,
           tokenIn: tokenIn.address,
           tokenOut: tokenOut.address,

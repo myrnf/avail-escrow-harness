@@ -8,6 +8,23 @@ export type Venue = "KALQIX" | "KYBERSWAP";
 export type DeploymentKey = "testnet" | "canary" | "mainnet";
 export type Stakes = "fake" | "real";
 
+/**
+ * Which generation of the Escrow API a deployment serves. These are wire-
+ * incompatible in both directions, so every request and response must be built
+ * and read against the right one.
+ *
+ * "v03"    — testnet, canary. POST /v2/quote with `venues` / `kalqix` /
+ *            `kyberswap`, responses keyed `quote_id` / `venue` / `details`,
+ *            `create_calldata` supported, GET /v2/intent/{id}. Rejects unknown
+ *            request fields outright (422).
+ * "legacy" — mainnet. Pre-0.2.0: `whitelisted_venues` / `venue_options`,
+ *            responses keyed `id` / `venue_name` / `venue_detail`, no
+ *            calldata-on-quote, GET /intent/{id}. IGNORES unknown fields
+ *            rather than rejecting, so a wrong-shape request here fails
+ *            silently as a plausible-looking quote rather than an error.
+ */
+export type ApiShape = "v03" | "legacy";
+
 /** KalqiX-tradeable tokens on a deployment's Base chain. KalqiX is Base-only,
  *  so these are deployment-scoped rather than per-chain. The Kyber path does
  *  not use them — it resolves tokens per chain (see src/lib/tokens). */
@@ -44,10 +61,16 @@ export interface Deployment {
    *  selector is shown. A single entry means this backend does not honour
    *  `chain_id` and must stay pinned to that chain. */
   chainIds: number[];
-  /** Venues the multi-venue backend serves. Present → the app uses
-   *  POST /v2/quote, venue-aware POST /intent and GET /v2/intent/{id}.
-   *  ABSENT → legacy path: local KalqiX quoting plus the old intent shapes. */
+  /** Venues this deployment quotes and executes. Present → the app uses
+   *  POST /v2/quote and venue-aware POST /intent. ABSENT → local KalqiX
+   *  quoting only.
+   *
+   *  This used to also imply the wire shape and the GET /intent version. It no
+   *  longer does — mainnet serves multi-venue quotes on the OLD shape, so those
+   *  are `apiShape` now. Keep the three independent. */
   venues?: Venue[];
+  /** Wire generation this deployment speaks. See ApiShape. */
+  apiShape: ApiShape;
   /** `chain_id` to send to /v2/quote when it differs from the chain we actually
    *  broadcast on. Only testnet needs this — see the note on that entry.
    *  Absent → quote and execute on the same chain, which is the sane case. */
@@ -71,6 +94,7 @@ export const DEPLOYMENTS: Record<DeploymentKey, Deployment> = {
     // Base Sepolia only. KALQIX-only on purpose: Kyber has no coverage here.
     chainIds: [baseSepolia.id],
     venues: ["KALQIX"],
+    apiShape: "v03",
     // This backend REJECTS chain_id 84532 outright (top-level BAD_CHAIN_ID,
     // "Unsupported chain_id: 84532") but resolves its Base *Sepolia* KALQIX
     // assets under 8453, returning deposit calldata for the Sepolia escrow
@@ -102,6 +126,7 @@ export const DEPLOYMENTS: Record<DeploymentKey, Deployment> = {
     escrowContract: "0xDF06678Ca95fDBe30a719675779209B76370a1ee",
     chainIds: QUOTE_CHAIN_IDS,
     venues: ["KALQIX", "KYBERSWAP"],
+    apiShape: "v03",
     kalqixTokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",
@@ -126,8 +151,15 @@ export const DEPLOYMENTS: Record<DeploymentKey, Deployment> = {
     kalqixBaseUrl: "https://api.kalqix.com/v1",
     escrowContract: "0x74aED8C89b09bd96d87Add00744340289A1Ae90e",
     chainIds: [base.id],
-    // No `venues`: legacy path until this backend runs the multi-venue
-    // orchestrator.
+    // This backend DOES serve multi-venue quotes (KALQIX + KYBERSWAP) and
+    // honours QuickSwap source restriction — verified 2026-08-31, USDC→cbBTC
+    // returned both venues, and a restricted USDC→WETH routed quickswap-v4
+    // against aerodrome-cl unrestricted. It just speaks the old wire shape,
+    // which is why apiShape is "legacy" rather than venues being absent.
+    // No calldata-on-quote here: `create_calldata` is silently ignored, so
+    // mainnet always fetches calldata at confirm.
+    venues: ["KALQIX", "KYBERSWAP"],
+    apiShape: "legacy",
     kalqixTokens: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       cbBTC: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf",

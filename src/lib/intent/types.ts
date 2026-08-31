@@ -26,10 +26,16 @@ export interface CreateIntentRequest {
   // legacy mainnet backend, which may reject unknown keys.
   /** Executing venue; the backend defaults to KALQIX when omitted. */
   venue?: Venue;
-  /** REQUIRED for KYBERSWAP: the complete `details.execution_context` from
-   *  /v2/quote, passed back by the same object reference and never rebuilt.
-   *  Its `chainId` must equal `chain_id`. */
+  /** REQUIRED for KYBERSWAP on a "v03" deployment: the complete
+   *  `details.execution_context` from /v2/quote, passed back by the same object
+   *  reference and never rebuilt. Its `chainId` must equal `chain_id`. */
   execution_context?: KyberswapExecutionContext | null;
+  /** The "legacy" deployment's equivalent — the same `routeSummary`, by the
+   *  same reference, in the pre-0.2.0 wrapper. Exactly one of this and
+   *  `execution_context` is sent, chosen by `Deployment.apiShape`; sending the
+   *  wrong one is ignored rather than rejected on that build, which would strip
+   *  the route and fail at execution instead of at validation. */
+  venue_detail?: { routeSummary?: unknown } | null;
   /** REQUIRED for KYBERSWAP: the tx sender + output recipient. Must equal the
    *  connected wallet that will send the router tx. Ignored for KALQIX. */
   user_wallet?: Address | null;
@@ -88,6 +94,8 @@ export type IntentErrorCode =
   | "AMOUNT_IN_ABOVE_MAX_AMOUNT"
   | "BAD_VENUE"
   | "BAD_EXECUTION_CONTEXT"
+  /** The legacy build's name for the same condition. */
+  | "BAD_VENUE_DETAIL"
   | "BAD_USER_WALLET"
   // Quote-consuming form only: the retained calldata is gone (never existed,
   // already consumed, or past expires_at_ms). Both mean "re-quote and retry".

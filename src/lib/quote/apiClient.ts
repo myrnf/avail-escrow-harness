@@ -1,5 +1,5 @@
 import type { Address, Hex } from "viem";
-import type { Venue } from "../../config/deployments";
+import type { ApiShape, Venue } from "../../config/deployments";
 
 /** Thrown when the backend has stopped intake (HTTP 503 or an explicit
  *  SERVICE_UNAVAILABLE error code). Rendered as "intake stopped" in the UI. */
@@ -114,6 +114,11 @@ export interface AvailQuoteV2Response {
 }
 
 interface Params {
+  /** Wire generation to speak. Not negotiable per request — it's a property of
+   *  the deployment, and getting it wrong fails loudly on v03 (422) but
+   *  SILENTLY on legacy, which ignores unknown fields and would answer an
+   *  unrestricted quote to a restricted request. */
+  shape: ApiShape;
   /** The chain to QUOTE against, which is not always the chain we broadcast on
    *  — see `Deployment.quoteChainId`. */
   chainId: number;
@@ -140,22 +145,110 @@ interface Params {
  *  a runaway included_sources list, not a limit real requests approach. */
 const MAX_BODY_BYTES = 256 * 1024;
 
+/** One venue in a pre-0.2.0 response. Same information as QuoteDetailsV2, but
+ *  flat on the venue object and under different names. */
+interface LegacyVenueQuote {
+  venue_name: Venue | (string & {});
+  amount_out?: string | null;
+  amount_out_min?: string | null;
+  amount_in?: string | null;
+  quoted_at?: number | null;
+  approval_address?: Address | null;
+  venue_detail?: { routeSummary?: unknown } | null;
+  asset_in_symbol?: string | null;
+  asset_out_symbol?: string | null;
+  kyber_error_code?: number | string | null;
+  kyber_error_message?: string | null;
+  request_id?: string | null;
+  error_code?: QuoteVenueErrorCode | null;
+  error_message?: string | null;
+}
+
+interface LegacyQuoteResponse {
+  id: string;
+  quotes?: LegacyVenueQuote[];
+  error_code: string | null;
+  error_message: string | null;
+}
+
+/**
+ * Normalize a legacy response into the v0.3.0 shape so everything downstream —
+ * parsing, venue cards, route verification, intent construction — reads one
+ * shape and never branches on deployment.
+ *
+ * The legacy build has no `execution_context`; it returns only
+ * `venue_detail.routeSummary`. One is synthesized from what we already know:
+ * the chain we asked for, the slippage we sent, and the router, which on a
+ * KYBERSWAP quote IS `approval_address`. `origin` is null because the legacy
+ * build has no concept of it.
+ *
+ * `routeSummary` is carried BY REFERENCE, never cloned or re-serialized — the
+ * verbatim guarantee that POST /intent depends on applies just as much here.
+ */
+function fromLegacy(
+  r: LegacyQuoteResponse,
+  chainId: number,
+  slippageBps: number
+): AvailQuoteV2Response {
+  return {
+    quote_id: r.id,
+    error_code: r.error_code,
+    error_message: r.error_message,
+    quotes: (r.quotes ?? []).map((v) => ({
+      venue: v.venue_name,
+      amount_out: v.amount_out,
+      quoted_at_ms: v.quoted_at,
+      details: {
+        error_code: v.error_code,
+        error_message: v.error_message,
+        approval_address: v.approval_address,
+        amount_out_min: v.amount_out_min,
+        amount_in: v.amount_in,
+        asset_in_symbol: v.asset_in_symbol,
+        asset_out_symbol: v.asset_out_symbol,
+        kyber_code: v.kyber_error_code,
+        kyber_message: v.kyber_error_message,
+        kyber_request_id: v.request_id,
+        execution_context:
+          v.venue_detail && v.approval_address
+            ? {
+                chainId,
+                routeSummary: v.venue_detail.routeSummary, // same reference
+                routerAddress: v.approval_address,
+                slippageBps,
+                origin: null,
+              }
+            : null,
+        // No calldata-on-quote on this generation; confirm fetches it from
+        // POST /intent instead.
+        calldata: null,
+      },
+    })),
+  };
+}
+
 /**
  * Request multi-venue quotes from Avail's POST /v2/quote. CORS-open and
  * preflight-enabled, so it's called directly from the browser. Addresses are
  * lowercased to match Avail's case-sensitive asset registry (same as the
  * intent client).
  *
- * The request body is validated with `deny_unknown_fields`: a stale key fails
- * the whole request with a 422 rather than being ignored (this is exactly how
- * the pre-0.2.0 `whitelisted_venues` broke every quote). Per-venue option
- * objects are therefore omitted entirely when unused, never sent as null.
+ * On "v03" the request body is validated with `deny_unknown_fields`: a stale
+ * key fails the whole request with a 422 rather than being ignored (this is
+ * exactly how the pre-0.2.0 `whitelisted_venues` broke every quote). Per-venue
+ * option objects are therefore omitted entirely when unused, never sent as null.
+ *
+ * On "legacy" (mainnet) the opposite hazard applies: unknown fields are
+ * IGNORED, so sending v03 names there yields a valid-looking unrestricted quote
+ * instead of an error. Both branches are built explicitly for that reason, and
+ * the legacy response is normalized to the v03 shape before returning.
  */
 export async function getAvailQuoteV2(
   baseUrl: string,
   params: Params
 ): Promise<AvailQuoteV2Response> {
   const {
+    shape,
     chainId,
     tokenIn,
     tokenOut,
@@ -166,6 +259,8 @@ export async function getAvailQuoteV2(
     kalqixCalldata,
     kyberCalldata,
   } = params;
+
+  const legacy = shape === "legacy";
 
   const kyberswap =
     includedSources?.length || kyberCalldata
@@ -183,26 +278,49 @@ export async function getAvailQuoteV2(
         }
       : undefined;
 
-  const body = JSON.stringify({
-    chain_id: chainId,
+  const common = {
     token_in: tokenIn.toLowerCase(),
     token_out: tokenOut.toLowerCase(),
     amount_in: amountIn.toString(),
     slippage_bps: slippageBps,
-    // null (not []) means "all venues" per the spec; an empty allowlist would
-    // be a request for nothing.
-    venues: venues.length ? venues : null,
-    ...(kalqixCalldata
+  };
+
+  const body = JSON.stringify(
+    legacy
       ? {
-          kalqix: {
-            create_calldata: kalqixCalldata.permit
-              ? { permit: kalqixCalldata.permit }
-              : {},
-          },
+          // chain_id is deliberately omitted: this build ignores it and is
+          // pinned to Base, so sending it would imply a guarantee it doesn't
+          // make. Callers keep the deployment locked to one chain instead.
+          ...common,
+          whitelisted_venues: venues.length ? venues : null,
+          venue_options: includedSources?.length
+            ? [
+                {
+                  venue_name: "KYBERSWAP",
+                  option: { included_sources: includedSources },
+                },
+              ]
+            : null,
+          // No create_calldata on this generation — silently ignored if sent.
         }
-      : {}),
-    ...(kyberswap ? { kyberswap } : {}),
-  });
+      : {
+          chain_id: chainId,
+          ...common,
+          // null (not []) means "all venues" per the spec; an empty allowlist
+          // would be a request for nothing.
+          venues: venues.length ? venues : null,
+          ...(kalqixCalldata
+            ? {
+                kalqix: {
+                  create_calldata: kalqixCalldata.permit
+                    ? { permit: kalqixCalldata.permit }
+                    : {},
+                },
+              }
+            : {}),
+          ...(kyberswap ? { kyberswap } : {}),
+        }
+  );
 
   const bytes = new TextEncoder().encode(body).length;
   if (bytes > MAX_BODY_BYTES) {
@@ -223,7 +341,10 @@ export async function getAvailQuoteV2(
     // error_code; the caller inspects error_code / quotes. Malformed-request
     // statuses (413 body too large, 415 wrong content-type, 422 bad shape,
     // and JSON-syntax 400s) answer in text/plain and land in the catch.
-    parsed = JSON.parse(text) as AvailQuoteV2Response;
+    const raw = JSON.parse(text);
+    parsed = legacy
+      ? fromLegacy(raw as LegacyQuoteResponse, chainId, slippageBps)
+      : (raw as AvailQuoteV2Response);
   } catch {
     if (res.status === 503) throw new ServiceUnavailableError();
     throw new Error(`/v2/quote ${res.status}: ${text.slice(0, 160)}`);
