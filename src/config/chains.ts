@@ -19,7 +19,43 @@ import {
   sonic,
   unichain,
 } from "viem/chains";
-import type { Address, Chain } from "viem";
+import { defineChain, type Address, type Chain } from "viem";
+
+/**
+ * Chains viem 2.48 does not ship a definition for. Both are recent mainnets and
+ * both were confirmed against their own RPC on 2026-09-18 (eth_chainId), so the
+ * ids here are measured rather than copied from a chain list.
+ */
+
+/** Robinhood Chain — an Arbitrum Orbit L2, mainnet since 2026-07-01. Gas is
+ *  ether, so it behaves like every other EVM chain in this app.
+ *  eth_chainId → 0x1237 (4663). */
+const robinhood = defineChain({
+  id: 4663,
+  name: "Robinhood Chain",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["https://rpc.mainnet.chain.robinhood.com"] } },
+  blockExplorers: {
+    default: {
+      name: "Blockscout",
+      url: "https://robinhoodchain.blockscout.com",
+    },
+  },
+});
+
+/** Arc — Circle's permissioned L1, public mainnet since 2026-09-16. Gas is paid
+ *  in USDC, NOT ether: `nativeCurrency` is 6-decimal USDC and every
+ *  nativeCurrency-driven amount in the app depends on that being right.
+ *  viem ships `arcTestnet` (5042002) only. eth_chainId → 0x13b2 (5042). */
+const arc = defineChain({
+  id: 5042,
+  name: "Arc",
+  nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 6 },
+  rpcUrls: { default: { http: ["https://rpc.mainnet.arc.io"] } },
+  blockExplorers: {
+    default: { name: "Blockscout", url: "https://explorer.arc.io" },
+  },
+});
 
 /** The de-facto native-asset sentinel, registered in Avail's asset registry and
  *  matched on-chain by AvailEscrow's ETH_ADDRESS constant. Represents the chain's
@@ -51,6 +87,24 @@ export interface ChainConfig {
    *  unselectable, with `disabledReason` shown. */
   routable: boolean;
   disabledReason?: string;
+  /** KyberSwap routes this chain but Avail's orchestrator does not carry it in
+   *  its `chain_id` enum yet, so POST /v2/quote answers 400 BAD_CHAIN_ID. Set
+   *  it to list a chain greyed out while the backend catches up; delete it to
+   *  turn the chain on, and nothing else has to change.
+   *
+   *  Deliberately distinct from `routable`, which is about KyberSwap coverage —
+   *  a `backendPending` chain IS routable. No chain carries it today (Robinhood
+   *  Chain and Arc both shipped on canary 2026-09-18); it stays as the
+   *  mechanism for the next one. */
+  backendPending?: string;
+  /** This chain's gas token is an ordinary ERC-20 predeploy rather than the
+   *  0xEeee… sentinel — Arc, whose gas token is USDC at 0x3600…0000 (symbol
+   *  "USDC", 6 decimals, read from the contract 2026-09-18). KyberSwap answers
+   *  "route not found" for the sentinel there and routes the predeploy instead,
+   *  so the picker must NOT offer a sentinel entry: it would sit next to the
+   *  real USDC as a second, permanently unquotable row. Holds the predeploy
+   *  address for reference. */
+  nativeAsErc20?: Address;
 }
 
 function cfg(
@@ -185,6 +239,23 @@ export const CHAINS: Record<number, ChainConfig> = {
     routable: true,
   }),
 
+  // KYBERSWAP-only, like every chain off Base. Slug `robinhood` reaches chain
+  // 4663 and `arc` reaches 5042; canary quotes both with live routes and the
+  // right execution_context.chainId (verified 2026-09-18).
+  [robinhood.id]: cfg(robinhood, {
+    rpcUrl: import.meta.env.VITE_ROBINHOOD_RPC || robinhood.rpcUrls.default.http[0],
+    kyberSlug: "robinhood",
+    kalqixEnabled: false,
+    routable: true,
+  }),
+  [arc.id]: cfg(arc, {
+    rpcUrl: import.meta.env.VITE_ARC_RPC || arc.rpcUrls.default.http[0],
+    kyberSlug: "arc",
+    kalqixEnabled: false,
+    routable: true,
+    nativeAsErc20: "0x3600000000000000000000000000000000000000",
+  }),
+
   // Not in the chain_id enum — the testnet deployment's own chain. KalqiX-only:
   // Kyber has no Base Sepolia coverage.
   [baseSepolia.id]: cfg(baseSepolia, {
@@ -195,8 +266,12 @@ export const CHAINS: Record<number, ChainConfig> = {
   }),
 };
 
-/** The API's `chain_id` enum, in selector display order. Excludes Base Sepolia,
- *  which is deployment-pinned rather than selectable. */
+/** Every chain the multi-chain deployments LIST, in selector display order.
+ *  Excludes Base Sepolia, which is deployment-pinned rather than selectable.
+ *
+ *  Membership here is not the same as being tradeable — Mantle is listed and
+ *  greyed out — so use `isSelectable` to decide whether a chain can be quoted.
+ *  All 20 entries are in the API's `chain_id` enum as of 2026-09-18. */
 export const QUOTE_CHAIN_IDS: number[] = [
   base.id,
   polygon.id,
@@ -215,6 +290,10 @@ export const QUOTE_CHAIN_IDS: number[] = [
   plasma.id,
   monad.id,
   megaeth.id,
+  robinhood.id,
+  arc.id,
+  // Listed last because it is the one entry the selector greys out — KyberSwap
+  // has no routing for it.
   mantle.id,
 ];
 
@@ -224,6 +303,17 @@ export function chainConfig(id: number): ChainConfig {
   const c = CHAINS[id];
   if (!c) throw new Error(`Unknown chain id ${id}`);
   return c;
+}
+
+/** True when the chain can actually be traded from the harness: KyberSwap
+ *  routes it AND the orchestrator accepts its chain_id. */
+export function isSelectable(c: ChainConfig): boolean {
+  return c.routable && !c.backendPending;
+}
+
+/** Why a chain is greyed out in the selector, or undefined when it isn't. */
+export function unselectableReason(c: ChainConfig): string | undefined {
+  return c.routable ? c.backendPending : c.disabledReason;
 }
 
 /** True when QuickSwap routes through KyberSwap on this chain, i.e. we can

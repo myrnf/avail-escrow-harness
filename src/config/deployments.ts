@@ -40,9 +40,13 @@ export interface Deployment {
   availEscrowBaseUrl: string;
   kalqixBaseUrl: string;
   escrowContract: Address;
-  /** Chain ids selectable on this deployment. More than one → the chain
-   *  selector is shown. A single entry means this backend does not honour
-   *  `chain_id` and must stay pinned to that chain. */
+  /** Chain ids LISTED on this deployment. More than one → the chain selector is
+   *  shown. A single entry means this backend does not honour `chain_id` and
+   *  must stay pinned to that chain.
+   *
+   *  Listed is not the same as tradeable: entries carrying `routable: false` or
+   *  `backendPending` appear greyed out. `isSelectable` in config/chains.ts is
+   *  the test for whether a chain can actually be quoted. */
   chainIds: number[];
   /** Venues the multi-venue backend serves. Present → the app uses
    *  POST /v2/quote, venue-aware POST /intent and GET /v2/intent/{id}.

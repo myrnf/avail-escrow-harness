@@ -10,7 +10,12 @@
  *   2. SOURCES   — a QuickSwap-restricted quote on Polygon and Base routes
  *                  ONLY through that chain's QuickSwap pools, and differs from
  *                  the unrestricted route.
- *   3. CHAIN_ID  — canary rejects an off-enum chain with BAD_CHAIN_ID, while
+ *   3. PENDING   — any chain the harness lists but keeps unselectable is in
+ *                  exactly that state: KyberSwap routes it directly, and Avail
+ *                  still answers BAD_CHAIN_ID. Both halves failing is the
+ *                  signal to drop `backendPending` in src/config/chains.ts.
+ *                  Skipped while nothing is pending, which is the case today.
+ *   4. CHAIN_ID  — canary rejects an off-enum chain with BAD_CHAIN_ID, while
  *                  mainnet still silently ignores chain_id. The second half is
  *                  a known upstream defect; this asserts it hasn't been fixed
  *                  behind our back, because the app's chain gating depends on
@@ -63,7 +68,18 @@ const CHAINS = [
   { id: 43114, label: "Avalanche", routable: true },
   { id: 59144, label: "Linea", routable: true },
   { id: 80094, label: "Berachain", routable: true },
+  // Added to the enum 2026-09-18, KYBERSWAP-only like every chain off Base.
+  // Arc's gas token is USDC and the 0xEeee… sentinel does NOT route there, so
+  // the pair this picks is deliberately ERC-20 on both legs.
+  { id: 4663, label: "Robinhood Chain", routable: true },
+  { id: 5042, label: "Arc", routable: true },
 ];
+
+/** Chains the app ships as listed-but-unselectable: KyberSwap routes them, the
+ *  orchestrator's `chain_id` enum does not carry them yet. Mirrors the
+ *  `backendPending` entries in src/config/chains.ts — kept out of CHAINS so the
+ *  BREADTH assertion keeps meaning "routable ⇒ Avail quotes it". */
+const PENDING_CHAINS = [];
 
 /** A chain id the API's enum does not contain. Soneium — a QuickSwap chain
  *  Avail cannot serve, which is exactly the case the UI must fail closed on. */
@@ -274,7 +290,73 @@ async function checkSources() {
   }
 }
 
-// ── 3. CHAIN_ID ──────────────────────────────────────────────────────────
+// ── 3. PENDING ─────────────────────────────────────────────────────────
+/**
+ * Readiness gate for the chains the harness lists but will not let you select.
+ *
+ * Two halves, and they are asserted separately on purpose:
+ *   - KyberSwap routes the chain directly. If this fails the harness is wrong
+ *     about coverage and the entry should not be listed at all.
+ *   - Avail answers BAD_CHAIN_ID. When THIS fails the backend has shipped the
+ *     chain, and the fix is to delete `backendPending` from the entry in
+ *     src/config/chains.ts — nothing else in the app changes.
+ */
+async function checkPending() {
+  if (!PENDING_CHAINS.length) return;
+  console.log(
+    `\n\x1b[1mPENDING\x1b[0m — listed-but-unselectable chains are still exactly that`
+  );
+  for (const c of PENDING_CHAINS) {
+    const pair = await tokenPair(c.id);
+    assert(!!pair, `${c.label} (${c.id}) — Kyber serves a token list`);
+    if (!pair) continue;
+
+    // Half one: the aggregator itself, bypassing Avail.
+    let routed = false;
+    let kyberDetail = "";
+    try {
+      const qs = new URLSearchParams({
+        tokenIn: pair.tokenIn.address,
+        tokenOut: pair.tokenOut.address,
+        amountIn: pair.amountIn,
+      });
+      const res = await fetch(
+        `https://aggregator-api.kyberswap.com/${c.kyberSlug}/api/v1/routes?${qs}`,
+        { headers: { "x-client-id": "avail-escrow-harness-probe" } }
+      );
+      const j = await res.json();
+      routed = !!j?.data?.routeSummary?.amountOut;
+      kyberDetail = routed
+        ? `${pair.tokenIn.symbol}→${pair.tokenOut.symbol} out=${j.data.routeSummary.amountOut}`
+        : j?.message ?? String(res.status);
+    } catch (e) {
+      kyberDetail = e.message;
+    }
+    assert(
+      routed,
+      `${c.label} — KyberSwap routes /${c.kyberSlug} directly`,
+      VERBOSE ? kyberDetail : ""
+    );
+
+    // Half two: Avail, which should still be refusing the chain_id.
+    const { status, json } = await quote({
+      chain_id: c.id,
+      token_in: pair.tokenIn.address,
+      token_out: pair.tokenOut.address,
+      amount_in: pair.amountIn,
+      slippage_bps: 50,
+    });
+    const refused = status === 400 && json?.error_code === "BAD_CHAIN_ID";
+    assert(
+      refused,
+      `${c.label} — ${ENV} still answers BAD_CHAIN_ID` +
+        (refused ? "" : " — SHIPPED? drop backendPending in src/config/chains.ts"),
+      `${status} ${json?.error_code ?? "no error_code"}`
+    );
+  }
+}
+
+// ── 4. CHAIN_ID ──────────────────────────────────────────────────────────
 async function checkChainIdHandling() {
   console.log(`\n\x1b[1mCHAIN_ID\x1b[0m — off-enum chain handling per deployment`);
   const body = {
@@ -309,7 +391,7 @@ async function checkChainIdHandling() {
   }
 }
 
-// ── 4. BODY LIMIT ────────────────────────────────────────────────────────
+// ── 5. BODY LIMIT ────────────────────────────────────────────────────────
 // The documented Axum cap for /v2/quote. An earlier 512-byte figure here was
 // wrong: canary accepted an 80KB body with a 200 (verified 2026-08-20). Kept as
 // a guard against an included_sources list growing without bound, not as a
@@ -339,6 +421,7 @@ const t0 = Date.now();
 console.log(`Probing \x1b[1m${ENV}\x1b[0m at ${BASE}`);
 await checkBreadth();
 await checkSources();
+await checkPending();
 await checkChainIdHandling();
 checkBodyLimit();
 

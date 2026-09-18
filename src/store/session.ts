@@ -5,7 +5,7 @@ import {
   DEPLOYMENTS,
   type DeploymentKey,
 } from "../config/deployments";
-import { DEFAULT_CHAIN_ID } from "../config/chains";
+import { chainConfig, DEFAULT_CHAIN_ID, isSelectable } from "../config/chains";
 
 /** Pick a valid chain for a deployment, preferring the caller's current choice,
  *  then Base, then whatever the deployment does offer. Switching deployments
@@ -13,7 +13,13 @@ import { DEFAULT_CHAIN_ID } from "../config/chains";
  *  silently ignores chain_id, so a stale selection there is a wrong quote
  *  rather than an error. */
 function clampChain(key: DeploymentKey, preferred: number): number {
-  const allowed = DEPLOYMENTS[key].chainIds;
+  // Only chains the selector would actually offer. A deployment's chainIds now
+  // includes entries that are listed but not yet tradeable (no KyberSwap
+  // routing, or not in the backend's chain_id enum), and rehydrating onto one
+  // of those would leave the app stuck on a chain that can never quote.
+  const allowed = DEPLOYMENTS[key].chainIds.filter((id) =>
+    isSelectable(chainConfig(id))
+  );
   if (allowed.includes(preferred)) return preferred;
   if (allowed.includes(DEFAULT_CHAIN_ID)) return DEFAULT_CHAIN_ID;
   return allowed[0] ?? DEFAULT_CHAIN_ID;
