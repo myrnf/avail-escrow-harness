@@ -31,6 +31,33 @@ export function nativeToken(c: ChainConfig): ChainToken {
   };
 }
 
+/**
+ * The token the app offers as a chain's own asset — what the swap form starts
+ * on, and the first entry in the picker.
+ *
+ * Normally that is the native asset. On a chain whose gas token is also an
+ * ERC-20 predeploy (Arc) it is the predeploy instead: the 0xEeee… sentinel
+ * neither routes there nor reports a balance at the right scale, so offering it
+ * would put an unquotable row in front of the user with a balance 1e12 times
+ * too large. Substituting here rather than merely hiding the sentinel keeps the
+ * chain's asset selectable, which is the point.
+ *
+ * Deliberately NOT marked `isNative`: the predeploy is approved and transferred
+ * like any ERC-20, and it is balanceOf, not eth_getBalance, that reports it.
+ */
+export function defaultToken(c: ChainConfig): ChainToken {
+  const p = c.nativeAsErc20;
+  if (!p) return nativeToken(c);
+  return {
+    chainId: c.id,
+    address: p.address,
+    symbol: p.symbol,
+    name: p.name,
+    decimals: p.decimals,
+    source: "native",
+  };
+}
+
 /** Stamp the QuickSwap-listed marker. Applied centrally in mergeTokens and to
  *  search results, so every path into the picker is labelled consistently. */
 export function markQuickswapListed(t: ChainToken): ChainToken {

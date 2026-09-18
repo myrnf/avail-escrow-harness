@@ -5,7 +5,7 @@ import {
   getKyberTokens,
   markQuickswapListed,
   mergeTokens,
-  nativeToken,
+  defaultToken,
   quickswapListSize,
   quickswapTokens,
   resolveTokenOnchain,
@@ -59,11 +59,10 @@ export function useChainTokens() {
   const tokens = useMemo(
     () =>
       mergeTokens(
-        // Arc's gas token is USDC, reachable as a plain ERC-20 predeploy and
-        // NOT via the 0xEeee… sentinel — Kyber returns "route not found" for
-        // the sentinel there. Offering it would put an unquotable second
-        // "USDC" in the picker, so the chain's own list supplies it instead.
-        chain.nativeAsErc20 ? [] : [nativeToken(chain)],
+        // The chain's own asset — native, or the ERC-20 predeploy that stands
+        // in for it on Arc. First in the list, so it wins identity over Kyber's
+        // plain row for the same address.
+        [defaultToken(chain)],
         kalqixTokens,
         // Ordered by AUTHORITY, not richness: native and the KalqiX assets
         // define identity (notably isNative), while Kyber and QuickSwap
