@@ -44,13 +44,23 @@ const robinhood = defineChain({
 });
 
 /** Arc — Circle's permissioned L1, public mainnet since 2026-09-16. Gas is paid
- *  in USDC, NOT ether: `nativeCurrency` is 6-decimal USDC and every
- *  nativeCurrency-driven amount in the app depends on that being right.
- *  viem ships `arcTestnet` (5042002) only. eth_chainId → 0x13b2 (5042). */
+ *  in USDC, NOT ether. viem ships `arcTestnet` (5042002) only.
+ *  eth_chainId → 0x13b2 (5042).
+ *
+ *  `decimals: 18` is deliberate and is NOT the USDC token's 6. Arc keeps
+ *  ordinary wei-scaled accounting for the gas asset and denominates it in USDC,
+ *  so the SAME balance reads at two scales (measured 2026-09-18):
+ *
+ *    eth_getBalance          323773222047000000000000  (÷1e18 → 323,773.222047)
+ *    balanceOf(0x3600…0000)            323773222047    (÷1e6  → 323,773.222047)
+ *
+ *  viem formats eth_getBalance with this field, so 6 here renders a wallet's
+ *  balance 1e12 times too large. The 6-decimal view belongs to the ERC-20
+ *  predeploy below, which is what actually trades. */
 const arc = defineChain({
   id: 5042,
   name: "Arc",
-  nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 6 },
+  nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 18 },
   rpcUrls: { default: { http: ["https://rpc.mainnet.arc.io"] } },
   blockExplorers: {
     default: { name: "Blockscout", url: "https://explorer.arc.io" },
@@ -97,14 +107,26 @@ export interface ChainConfig {
    *  Chain and Arc both shipped on canary 2026-09-18); it stays as the
    *  mechanism for the next one. */
   backendPending?: string;
-  /** This chain's gas token is an ordinary ERC-20 predeploy rather than the
-   *  0xEeee… sentinel — Arc, whose gas token is USDC at 0x3600…0000 (symbol
-   *  "USDC", 6 decimals, read from the contract 2026-09-18). KyberSwap answers
-   *  "route not found" for the sentinel there and routes the predeploy instead,
-   *  so the picker must NOT offer a sentinel entry: it would sit next to the
-   *  real USDC as a second, permanently unquotable row. Holds the predeploy
-   *  address for reference. */
-  nativeAsErc20?: Address;
+  /** This chain's gas token also exists as an ordinary ERC-20 predeploy, and
+   *  the predeploy — not the 0xEeee… sentinel — is the tradeable form. Arc is
+   *  the case: gas is USDC, and 0x3600…0000 reports symbol "USDC" / 6 decimals
+   *  (read from the contract 2026-09-18).
+   *
+   *  KyberSwap answers "route not found" for the sentinel on such a chain and
+   *  canary passes that through as VENUE_ERROR, so the app substitutes this
+   *  token for the native one everywhere the native asset would be offered —
+   *  see `defaultToken` in lib/tokens. Metadata is carried here rather than
+   *  looked up so the substitution works before any token list has loaded. */
+  nativeAsErc20?: {
+    address: Address;
+    symbol: string;
+    name: string;
+    decimals: number;
+  };
+  /** Base units of the gas token to hold back when the user presses MAX.
+   *  Defaults to DEFAULT_GAS_RESERVE; set it where that default is the wrong
+   *  size, which happens when gas is priced in something other than ether. */
+  gasReserve?: bigint;
 }
 
 function cfg(
@@ -253,7 +275,16 @@ export const CHAINS: Record<number, ChainConfig> = {
     kyberSlug: "arc",
     kalqixEnabled: false,
     routable: true,
-    nativeAsErc20: "0x3600000000000000000000000000000000000000",
+    nativeAsErc20: {
+      address: "0x3600000000000000000000000000000000000000",
+      symbol: "USDC",
+      name: "USD Coin",
+      decimals: 6,
+    },
+    // Gas is USDC here, so the 0.0001-of-native default would reserve a
+    // hundredth of a cent. A measured Arc swap costs ~0.0066 USDC
+    // (330,498 gas × 20.0 gwei), so half a dollar is ample headroom.
+    gasReserve: 500_000n, // 0.5 USDC
   }),
 
   // Not in the chain_id enum — the testnet deployment's own chain. KalqiX-only:
@@ -303,6 +334,30 @@ export function chainConfig(id: number): ChainConfig {
   const c = CHAINS[id];
   if (!c) throw new Error(`Unknown chain id ${id}`);
   return c;
+}
+
+/** MAX headroom on a chain whose gas is ether: 0.0001, which is ample on an L2
+ *  (sub-cent) and still negligible on L1. Chains pricing gas in something else
+ *  override it with `gasReserve`. */
+export const DEFAULT_GAS_RESERVE = 100_000_000_000_000n; // 0.0001 × 1e18
+
+/** True when this token is what the chain charges gas in — the native asset, or
+ *  the ERC-20 predeploy standing in for it. Paying a swap with it means MAX has
+ *  to hold something back or the transaction can't afford its own gas. */
+export function isGasToken(
+  c: ChainConfig,
+  token: { address: string; isNative?: boolean }
+): boolean {
+  if (token.isNative) return true;
+  const p = c.nativeAsErc20;
+  return !!p && p.address.toLowerCase() === token.address.toLowerCase();
+}
+
+/** Base units of the gas token to keep back on MAX, in that token's own
+ *  decimals — which are the predeploy's, not the native asset's, wherever
+ *  `nativeAsErc20` is set. */
+export function gasReserveFor(c: ChainConfig): bigint {
+  return c.gasReserve ?? DEFAULT_GAS_RESERVE;
 }
 
 /** True when the chain can actually be traded from the harness: KyberSwap

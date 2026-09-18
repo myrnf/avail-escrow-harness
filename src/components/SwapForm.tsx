@@ -22,8 +22,12 @@ import { useCreateIntent, useCreateIntentFromQuote } from "../hooks/useIntent";
 import { useDeposit } from "../hooks/useDeposit";
 import { useActiveChain, useActiveDeployment } from "../hooks/useSession";
 import { useChainTokens } from "../hooks/useChainTokens";
-import { nativeToken, type ChainToken } from "../lib/tokens";
-import { isQuickswapChain } from "../config/chains";
+import { defaultToken, type ChainToken } from "../lib/tokens";
+import {
+  gasReserveFor,
+  isGasToken,
+  isQuickswapChain,
+} from "../config/chains";
 import { usePermit } from "../hooks/usePermit";
 import { fmtAmount, parseAmount } from "../lib/format";
 import { ServiceUnavailableError } from "../lib/quote/apiClient";
@@ -54,9 +58,9 @@ export function SwapForm({ isInFlight }: Props) {
     quickswapListed: qsListedCount,
     quickswapTotal: qsTotalCount,
   } = useChainTokens();
-  // Native is available synchronously on every chain, so the form always has a
-  // valid input token even before the token list resolves.
-  const [tokenIn, setTokenIn] = useState<ChainToken>(() => nativeToken(chain));
+  // The chain's own asset resolves synchronously from config on every chain, so
+  // the form always has a valid input token even before the token list loads.
+  const [tokenIn, setTokenIn] = useState<ChainToken>(() => defaultToken(chain));
   const [tokenOut, setTokenOut] = useState<ChainToken | null>(null);
   const [amountInStr, setAmountInStr] = useState("");
   const [slippageBps, setSlippageBps] = useState<number>(DEFAULT_SLIPPAGE_BPS);
@@ -327,10 +331,11 @@ export function SwapForm({ isInFlight }: Props) {
     setSubmitError(null);
   }, [network.key, chain.id]);
 
-  // Re-seed the pair on every chain change. Native is available synchronously,
-  // so the input leg is never empty; the output leg waits for the token list.
+  // Re-seed the pair on every chain change. The chain's own asset is available
+  // synchronously, so the input leg is never empty; the output leg waits for
+  // the token list.
   useEffect(() => {
-    setTokenIn(nativeToken(chain));
+    setTokenIn(defaultToken(chain));
     setTokenOut(null);
   }, [chain.id]);
 
@@ -338,7 +343,7 @@ export function SwapForm({ isInFlight }: Props) {
   // from, and one surviving a switch would send a foreign address with this
   // chain's chain_id — a wrong-chain quote that looks valid. Cheap to assert.
   useEffect(() => {
-    if (tokenIn.chainId !== chain.id) setTokenIn(nativeToken(chain));
+    if (tokenIn.chainId !== chain.id) setTokenIn(defaultToken(chain));
     if (tokenOut && tokenOut.chainId !== chain.id) setTokenOut(null);
   }, [chain, tokenIn, tokenOut]);
 
@@ -367,7 +372,7 @@ export function SwapForm({ isInFlight }: Props) {
   }, [tokens, tokenIn, tokenOut]);
 
   // Adopt the enriched entry once the token list resolves. A selection made
-  // before the list loaded — notably the synchronous native default — holds a
+  // before the list loaded — notably the synchronous chain-asset default — holds a
   // bare record with no logo or permit metadata, while the merged list has the
   // filled-in one. Without this the pill shows the initials fallback until the
   // user reselects the same token, which is exactly what it looks like: a bug.
@@ -555,24 +560,25 @@ export function SwapForm({ isInFlight }: Props) {
   function selectTokenOut(t: ChainToken) {
     if (isInFlight) return;
     if (t.address.toLowerCase() === tokenIn.address.toLowerCase()) {
-      setTokenIn(tokenOut ?? nativeToken(chain));
+      setTokenIn(tokenOut ?? defaultToken(chain));
     }
     setTokenOut(t);
     resetForPairChange();
   }
 
-  // Native ETH pays its own gas, so MAX can't be the full balance or the deposit
-  // tx (msg.value == amountIn) leaves nothing for gas and the wallet rejects it.
-  // Reserve a small headroom (Base L2 gas is sub-cent; 0.0001 ETH is ample).
-  // ERC-20s pay gas separately, so MAX = full balance.
-  const NATIVE_GAS_RESERVE = 100_000_000_000_000n; // 0.0001 ETH
-
+  // Paying with the chain's gas token means MAX can't be the whole balance —
+  // the transaction has to be able to afford its own gas. That is the native
+  // asset on most chains, but on Arc gas is USDC and the tradeable form is an
+  // ERC-20 predeploy, so the test is `isGasToken`, not `isNative`: keying on
+  // nativeness alone would let MAX spend the entire gas balance there. Any
+  // other ERC-20 pays gas separately, so MAX = full balance.
   function setMax() {
     if (typeof balance.data !== "bigint") return;
     const bal = balance.data as bigint;
-    const usable = inInfo.isNative
-      ? bal > NATIVE_GAS_RESERVE
-        ? bal - NATIVE_GAS_RESERVE
+    const reserve = gasReserveFor(chain);
+    const usable = isGasToken(chain, inInfo)
+      ? bal > reserve
+        ? bal - reserve
         : 0n
       : bal;
     setAmountInStr(
