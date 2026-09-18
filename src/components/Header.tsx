@@ -7,7 +7,12 @@ import {
   isMultiChain,
   type DeploymentKey,
 } from "../config/deployments";
-import { chainConfig, isQuickswapChain } from "../config/chains";
+import {
+  chainConfig,
+  isQuickswapChain,
+  isSelectable,
+  unselectableReason,
+} from "../config/chains";
 import { shortAddress } from "../lib/format";
 
 export function Header() {
@@ -102,12 +107,12 @@ export function Header() {
                 <option
                   key={c.id}
                   value={c.id}
-                  disabled={!c.routable}
-                  title={c.disabledReason}
+                  disabled={!isSelectable(c)}
+                  title={unselectableReason(c)}
                 >
                   {c.label}
                   {isQuickswapChain(c) ? " · QuickSwap" : ""}
-                  {c.routable ? "" : ` — ${c.disabledReason}`}
+                  {isSelectable(c) ? "" : ` — ${unselectableReason(c)}`}
                 </option>
               ))}
             </select>
